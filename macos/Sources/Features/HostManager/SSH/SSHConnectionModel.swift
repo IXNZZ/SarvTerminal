@@ -44,6 +44,11 @@ final class SSHConnectionModel: ObservableObject {
     @Published var autoReconnecting: Bool = false
     @Published var reconnectSecondsRemaining: Int = 0
     var reconnectAttempts: Int = 0
+    /// Set when the user clicks "Stop" on the auto-reconnect countdown. It's the
+    /// difference between "waiting to come back" and "the user asked us to leave
+    /// it alone", so a wake / network-return nudge doesn't reconnect behind
+    /// their back. Cleared by any deliberate reconnect and by a successful one.
+    var autoReconnectStopped = false
 
     /// True when we already have a password (saved) so the first attempt needs
     /// no field and shows no card while connecting.

@@ -415,15 +415,20 @@ final class VaultsTabsModel: ObservableObject {
 
     // MARK: - Reachability & wake → instant reconnect
 
-    /// Trigger an immediate reconnect (skipping the countdown) for every
-    /// connection currently in the auto-reconnect loop. Used when the network
-    /// comes back or the machine wakes from sleep — the events that most often
-    /// follow a dropped SSH session.
+    /// Bring every reconnectable SSH session back at once, skipping any
+    /// countdown. Used when the network returns or the machine wakes — the
+    /// events that most often follow a dropped session.
+    ///
+    /// This asks EVERY registered connection, not just the ones already
+    /// counting down: while the machine sleeps no poll timer runs, so a session
+    /// whose ssh died overnight is still marked `.connected` at wake time and
+    /// would otherwise never be noticed. `resumeIfReconnectable` force-detects
+    /// that case and skips connections that need the user (password, host key)
+    /// or that the user explicitly stopped.
     private func retryReconnectingNow(reason: String) {
-        // Snapshot: retryNow() re-keys `connections` as it relaunches.
-        for conn in Array(connections.values) where conn.model.autoReconnecting {
-            conn.model.addLog("bolt.horizontal.circle", .secondary, reason)
-            conn.controller.retryNow()
+        // Snapshot: a retry re-keys `connections` as it relaunches.
+        for conn in Array(connections.values) {
+            conn.controller.resumeIfReconnectable(reason: reason)
         }
     }
 
@@ -981,6 +986,7 @@ final class VaultsTabsModel: ObservableObject {
     func reconnect(for model: SSHConnectionModel) {
         model.passwordAttempts = 0
         model.autoReconnecting = false
+        model.autoReconnectStopped = false
         model.reconnectAttempts = 0
         model.reconnectSecondsRemaining = 0
         // Pick up a password the user may have just corrected via "Edit host" —

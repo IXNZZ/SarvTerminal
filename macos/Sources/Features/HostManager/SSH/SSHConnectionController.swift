@@ -152,6 +152,7 @@ final class SSHConnectionController {
     func retryNow() {
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        model.autoReconnectStopped = false
         model.reconnectSecondsRemaining = 0
         tabsModel?.launchSSHConnection(for: model, password: model.passwordField)
     }
@@ -159,6 +160,7 @@ final class SSHConnectionController {
     /// Stop the automatic reconnect loop (the "Stop" button); the user can still
     /// reconnect manually.
     func stopAutoReconnect() {
+        model.autoReconnectStopped = true
         model.autoReconnecting = false
         model.reconnectSecondsRemaining = 0
         reconnectTimer?.invalidate()
@@ -241,7 +243,7 @@ final class SSHConnectionController {
                 return
             }
 
-            if sv.childExitedMessage != nil {
+            if sessionEnded(sv) {
                 noteAuthenticating()
                 model.addLog("xmark.octagon.fill", .red, "Connection closed")
                 fail(.unknown("The connection closed before a session was established."))
@@ -249,7 +251,7 @@ final class SSHConnectionController {
             }
 
         case .connected:
-            if sv.childExitedMessage != nil {
+            if sessionEnded(sv) {
                 model.addLog("xmark.octagon.fill", .red, "Session closed")
                 ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
                 model.stage = .disconnected
@@ -281,6 +283,7 @@ final class SSHConnectionController {
         // A successful connect clears any auto-reconnect back-off so a later drop
         // starts counting from the shortest interval again.
         model.autoReconnecting = false
+        model.autoReconnectStopped = false
         model.reconnectAttempts = 0
         model.reconnectSecondsRemaining = 0
         // "Continue" (connect without saving): drop the key we just added.
@@ -354,6 +357,58 @@ final class SSHConnectionController {
             scheduleReconnect()
         default:
             break
+        }
+    }
+
+    /// Whether the ssh process behind this connection is gone.
+    ///
+    /// `processExited` reads the core's own `child_exited` flag and is the
+    /// AUTHORITATIVE signal: it is true the moment ssh dies, whether or not the
+    /// tab is on screen. `childExitedMessage` is not — libghostty only posts it
+    /// when the surface is in a window, and for a BACKGROUND tab it instead
+    /// writes "Process exited. Press any key to close the terminal." into the
+    /// terminal and waits for a keypress before posting the close. Watching only
+    /// that message left a dropped background session sitting on a dead terminal
+    /// (no card, no auto-reconnect) until the user pressed a key.
+    private func sessionEnded(_ sv: Ghostty.SurfaceView) -> Bool {
+        sv.childExitedMessage != nil || sv.processExited
+    }
+
+    /// Reconnect NOW if this connection is — or should be — waiting to come
+    /// back. Called for every registered connection when the network returns or
+    /// the machine wakes (see `VaultsTabsModel.retryReconnectingNow`). Also
+    /// force-detects a session whose ssh process died while the machine was
+    /// asleep: no timer fires during sleep, so the drop is still unnoticed at
+    /// wake time and the connection wouldn't be in the reconnect loop yet.
+    /// Returns whether a retry was kicked off. States that need the USER
+    /// (password, host key, rejected credentials) are never touched.
+    @discardableResult
+    func resumeIfReconnectable(reason: String) -> Bool {
+        // The user explicitly stopped the loop — leave this one alone.
+        guard !model.autoReconnectStopped else { return false }
+        switch model.stage {
+        case .connecting, .connected:
+            guard let sv = surfaceView, sessionEnded(sv) else { return false }
+            model.addLog("bolt.horizontal.circle", .secondary, reason)
+            handleProcessExited()
+            // Only skip the countdown when the drop is genuinely retriable —
+            // handleProcessExited() may instead land on an auth prompt.
+            if model.autoReconnecting { retryNow() }
+            return true
+
+        case .disconnected:
+            model.addLog("bolt.horizontal.circle", .secondary, reason)
+            retryNow()
+            return true
+
+        case .failed(let failure):
+            guard failure.isAutoRetriable else { return false }
+            model.addLog("bolt.horizontal.circle", .secondary, reason)
+            retryNow()
+            return true
+
+        case .needsPassword, .needsHostKey:
+            return false
         }
     }
 
