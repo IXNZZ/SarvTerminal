@@ -283,16 +283,15 @@ pub const Shaper = struct {
         // Send the items. If the send succeeds then we wake up the
         // thread to process the items. If the send fails then do a manual
         // cleanup.
-        if (self.cf_release_thread.mailbox.push(global.io(), .{ .release = .{
+        // `send` notifies before it pushes. This runs on the renderer
+        // thread, so parking here on a full mailbox would stop the
+        // renderer draining its own mailbox, which in turn parks every
+        // UI-thread producer behind it -- a whole-app freeze from a
+        // font-release queue.
+        if (self.cf_release_thread.mailbox.send(global.io(), self.cf_release_thread.wakeup, .{ .release = .{
             .refs = items,
             .alloc = self.alloc,
-        } }, .{ .forever = {} }) != 0) {
-            self.cf_release_thread.wakeup.notify() catch |err| {
-                log.warn(
-                    "error notifying cf release thread to wake up, may stall err={}",
-                    .{err},
-                );
-            };
+        } }, .forever) != 0) {
             return;
         }
 

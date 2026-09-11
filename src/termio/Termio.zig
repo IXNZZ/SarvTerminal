@@ -516,9 +516,17 @@ pub fn resize(
         }
     }
 
-    // Mail the renderer so that it can update the GPU and re-render
-    _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
-    self.renderer_wakeup.notify() catch {};
+    // Mail the renderer so that it can update the GPU and re-render.
+    // `.forever` is safe here only because we are off the UI thread and
+    // `send` notifies before it pushes, so a full mailbox always has a
+    // drain coming; pushing first and notifying after deadlocks the two
+    // threads against each other.
+    _ = self.renderer_mailbox.send(
+        global.io(),
+        self.renderer_wakeup,
+        .{ .resize = size },
+        .forever,
+    );
 }
 
 /// Make a size report.
@@ -699,9 +707,12 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         }
 
         self.last_cursor_reset = now;
-        _ = self.renderer_mailbox.push(global.io(), .{
-            .reset_cursor_blink = {},
-        }, .{ .instant = {} });
+        _ = self.renderer_mailbox.send(
+            global.io(),
+            self.renderer_wakeup,
+            .{ .reset_cursor_blink = {} },
+            .instant,
+        );
     }
 
     // If we have an inspector, we enter SLOW MODE because we need to

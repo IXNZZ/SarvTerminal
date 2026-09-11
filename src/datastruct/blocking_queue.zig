@@ -96,6 +96,40 @@ pub fn BlockingQueue(
             alloc.destroy(self);
         }
 
+        /// Push a value and wake the consumer that drains this queue.
+        ///
+        /// This is the only safe way to publish to a mailbox whose consumer
+        /// drains solely from a wakeup callback. Pushing and *then* notifying
+        /// deadlocks: the queue is bounded, so a `.forever` push parks the
+        /// producer the moment it fills, one line before the notify it still
+        /// owes the consumer. The consumer sleeps waiting for a notification
+        /// only the parked producer can send, and the two wait on each other
+        /// forever. Notifying first guarantees a full queue always has a drain
+        /// already coming; notifying again after the push gets the value we
+        /// just wrote picked up on this wakeup rather than some later one.
+        ///
+        /// `wakeup` is anything with a `notify()` that can fail (an
+        /// `xev.Async` in practice); it is taken as `anytype` to keep this
+        /// data structure free of an event-loop dependency.
+        ///
+        /// Choose `timeout` by the calling thread, not by convenience. A
+        /// caller on a UI thread must pass `.instant` and tolerate a dropped
+        /// value, because any wait at all there is a frozen window. Reserve
+        /// `.forever` for values that own heap the consumer must free, and
+        /// only off the UI thread.
+        pub fn send(
+            self: *Self,
+            io: std.Io,
+            wakeup: anytype,
+            value: T,
+            timeout: Timeout,
+        ) Size {
+            wakeup.notify() catch {};
+            const size = self.push(io, value, timeout);
+            wakeup.notify() catch {};
+            return size;
+        }
+
         /// Push a value to the queue. This returns the total size of the
         /// queue (unread items) after the push. A return value of zero
         /// means that the push failed.

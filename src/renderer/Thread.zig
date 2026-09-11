@@ -202,6 +202,20 @@ pub fn deinit(self: *Thread) void {
     self.mailbox.destroy(self.alloc);
 }
 
+/// Send a message to this thread's mailbox and wake the thread to process it.
+///
+/// This is the only supported way to produce into `mailbox`; see
+/// `BlockingQueue.send` for why pushing directly deadlocks, and for how to
+/// choose `timeout`. Producers that hold the mailbox and wakeup without the
+/// owning `Thread` (`termio.Termio`) call `mailbox.send` directly.
+pub fn sendMessage(
+    self: *Thread,
+    message: rendererpkg.Message,
+    timeout: Mailbox.Timeout,
+) void {
+    _ = self.mailbox.send(global.io(), self.wakeup, message, timeout);
+}
+
 /// The main entrypoint for the thread.
 pub fn threadMain(self: *Thread) void {
     // Call child function so we can use errors...

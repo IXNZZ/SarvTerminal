@@ -919,7 +919,7 @@ pub fn activateInspector(self: *Surface) !void {
     }
 
     // Notify our components we have an inspector active
-    _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = true }, .{ .forever = {} });
+    self.renderer_thread.sendMessage(.{ .inspector = true }, .instant);
     self.queueIo(.{ .inspector = true }, .unlocked);
 }
 
@@ -936,7 +936,7 @@ pub fn deactivateInspector(self: *Surface) void {
     }
 
     // Notify our components we have deactivated inspector
-    _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = false }, .{ .forever = {} });
+    self.renderer_thread.sendMessage(.{ .inspector = false }, .instant);
     self.queueIo(.{ .inspector = false }, .unlocked);
 
     // Deinit the inspector
@@ -1455,15 +1455,10 @@ fn searchCallback_(
             const matches = try alloc.dupe(terminal.highlight.Flattened, matches_unowned);
             for (matches) |*m| m.* = try m.clone(alloc);
 
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
-                .{ .search_viewport_matches = .{
-                    .arena = arena,
-                    .matches = matches,
-                } },
-                .forever,
-            );
-            try self.renderer_thread.wakeup.notify();
+            self.renderer_thread.sendMessage(.{ .search_viewport_matches = .{
+                .arena = arena,
+                .matches = matches,
+            } }, .forever);
         },
 
         .selected_match => |selected_| {
@@ -1474,14 +1469,10 @@ fn searchCallback_(
                 const alloc = arena.allocator();
                 const match = try sel.highlight.clone(alloc);
 
-                _ = self.renderer_thread.mailbox.push(
-                    global.io(),
-                    .{ .search_selected_match = .{
-                        .arena = arena,
-                        .match = match,
-                    } },
-                    .forever,
-                );
+                self.renderer_thread.sendMessage(.{ .search_selected_match = .{
+                    .arena = arena,
+                    .match = match,
+                } }, .forever);
 
                 // Send the selected index to the surface mailbox
                 _ = self.surfaceMailbox().push(
@@ -1490,11 +1481,7 @@ fn searchCallback_(
                 );
             } else {
                 // Reset our selected match
-                _ = self.renderer_thread.mailbox.push(
-                    global.io(),
-                    .{ .search_selected_match = null },
-                    .forever,
-                );
+                self.renderer_thread.sendMessage(.{ .search_selected_match = null }, .instant);
 
                 // Reset the selected index
                 _ = self.surfaceMailbox().push(
@@ -1515,20 +1502,11 @@ fn searchCallback_(
 
         // When we quit, tell our renderer to reset any search state.
         .quit => {
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
-                .{ .search_selected_match = null },
-                .forever,
-            );
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
-                .{ .search_viewport_matches = .{
-                    .arena = .init(self.alloc),
-                    .matches = &.{},
-                } },
-                .forever,
-            );
-            try self.renderer_thread.wakeup.notify();
+            self.renderer_thread.sendMessage(.{ .search_selected_match = null }, .instant);
+            self.renderer_thread.sendMessage(.{ .search_viewport_matches = .{
+                .arena = .init(self.alloc),
+                .matches = &.{},
+            } }, .forever);
 
             // Reset search totals in the surface
             _ = self.surfaceMailbox().push(
@@ -1818,7 +1796,7 @@ pub fn updateConfig(
     termio_config_ptr.* = try termio.Termio.DerivedConfig.init(self.alloc, config);
     errdefer termio_config_ptr.deinit();
 
-    _ = self.renderer_thread.mailbox.push(global.io(), renderer_message, .{ .forever = {} });
+    self.renderer_thread.sendMessage(renderer_message, .forever);
     self.queueIo(.{
         .change_config = .{
             .alloc = self.alloc,
@@ -2473,14 +2451,12 @@ pub fn setFontSize(self: *Surface, size: font.face.DesiredSize) !void {
 
     // Notify our render thread of the new font stack. The renderer
     // MUST accept the new font grid and deref the old.
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
-        .font_grid = .{
-            .grid = font_grid,
-            .set = &self.app.font_grid_set,
-            .old_key = self.font_grid_key,
-            .new_key = font_grid_key,
-        },
-    }, .{ .forever = {} });
+    self.renderer_thread.sendMessage(.{ .font_grid = .{
+        .grid = font_grid,
+        .set = &self.app.font_grid_set,
+        .old_key = self.font_grid_key,
+        .new_key = font_grid_key,
+    } }, .forever);
 
     // Once we've sent the key we can replace our key
     self.font_grid_key = font_grid_key;
@@ -3346,11 +3322,7 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
         } }, .unlocked);
     }
 
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
-        .visible = visible,
-    }, .{ .forever = {} });
-
-    try self.queueRender();
+    self.renderer_thread.sendMessage(.{ .visible = visible }, .instant);
 }
 
 pub fn focusCallback(self: *Surface, focused: bool) !void {
@@ -3367,9 +3339,7 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     self.focused = focused;
 
     // Notify our render thread of the new state
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
-        .focus = focused,
-    }, .{ .forever = {} });
+    self.renderer_thread.sendMessage(.{ .focus = focused }, .instant);
 
     if (!focused) unfocused: {
         // If we lost focus and we have a keypress, then we want to send a key
@@ -5045,28 +5015,35 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 break :search;
             }
 
-            _ = s.state.mailbox.push(
+            // `.forever` because the needle owns heap the search thread
+            // must free, so we cannot drop it. `send` notifies before it
+            // pushes; pushing first and notifying after freezes the UI
+            // thread against a full search mailbox.
+            _ = s.state.mailbox.send(
                 global.io(),
+                s.state.wakeup,
                 .{ .change_needle = try .init(
                     self.alloc,
                     text,
                 ) },
                 .forever,
             );
-            s.state.wakeup.notify() catch {};
         },
 
         .navigate_search => |nav| {
             const s: *Search = if (self.search) |*s| s else return false;
-            _ = s.state.mailbox.push(
+            // `.instant`: we are on the UI thread and a navigation step
+            // owns nothing, so dropping one when the search thread is
+            // already saturated is far cheaper than freezing the window.
+            _ = s.state.mailbox.send(
                 global.io(),
+                s.state.wakeup,
                 .{ .select = switch (nav) {
                     .next => .next,
                     .previous => .prev,
                 } },
-                .forever,
+                .instant,
             );
-            s.state.wakeup.notify() catch {};
         },
 
         .copy_to_clipboard => |format| {
@@ -5672,11 +5649,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .main => @panic("crash binding action, crashing intentionally"),
 
             .render => {
-                _ = self.renderer_thread.mailbox.push(global.io(), .{ .crash = {} }, .{ .forever = {} });
-                self.queueRender() catch |err| {
-                    // Not a big deal if this fails.
-                    log.warn("failed to notify renderer of crash message err={}", .{err});
-                };
+                self.renderer_thread.sendMessage(.{ .crash = {} }, .instant);
             },
 
             .io => self.queueIo(.{ .crash = {} }, .unlocked),

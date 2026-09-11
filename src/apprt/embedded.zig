@@ -2127,12 +2127,16 @@ pub const CAPI = struct {
     const Darwin = struct {
         export fn ghostty_surface_set_display_id(ptr: *Surface, display_id: u32) void {
             const surface = &ptr.core_surface;
-            _ = surface.renderer_thread.mailbox.push(
-                global.io(),
+
+            // `.instant` because we are on the UI thread: AppKit calls this
+            // from a screen-change notification, and a display id is
+            // last-write-wins state that owns nothing, so dropping one is
+            // free. Waiting for mailbox space here is not -- it freezes the
+            // whole app until the renderer drains.
+            surface.renderer_thread.sendMessage(
                 .{ .macos_display_id = display_id },
-                .{ .forever = {} },
+                .instant,
             );
-            surface.renderer_thread.wakeup.notify() catch {};
         }
 
         /// Tell the surface that the apprt is driving vsync itself, and
@@ -2149,12 +2153,13 @@ pub const CAPI = struct {
         /// over to the apprt, and says nothing is ticking right now.
         export fn ghostty_surface_set_vsync_external(ptr: *Surface, running: bool) void {
             const surface = &ptr.core_surface;
-            _ = surface.renderer_thread.mailbox.push(
-                global.io(),
+
+            // `.instant` for the same reason as `set_display_id` above: UI
+            // thread, last-write-wins flag, nothing owned.
+            surface.renderer_thread.sendMessage(
                 .{ .macos_vsync_external = running },
-                .{ .forever = {} },
+                .instant,
             );
-            surface.renderer_thread.wakeup.notify() catch {};
         }
 
         /// Deliver one vsync tick to a surface, waking its render thread to
