@@ -18,7 +18,17 @@ final class SSHConnectionController {
     private var startTime = Date()
     private var authNoted = false
 
+    /// Handshake poll rate. Fast on purpose: `tick()` scrapes the visible
+    /// terminal text to spot auth prompts and failures, and the user is
+    /// watching a progress card, so latency here is visible.
     private let pollInterval: TimeInterval = 0.2
+    /// Poll rate once connected. The connected watch only reads two booleans
+    /// to notice the session ending, and the recovery it triggers counts down
+    /// in whole seconds -- so 5Hz bought nothing and cost real main-thread
+    /// time. This timer lives for the lifetime of every connected tab, so with
+    /// a wall of tabs the fast rate was tens of main-run-loop wakeups per
+    /// second competing with input and rendering.
+    private let connectedPollInterval: TimeInterval = 2.0
     private let handshakeGrace: TimeInterval = 1.2
     private let optimisticTimeout: TimeInterval = 20.0
     /// Back-off schedule (seconds) for automatic reconnect attempts; the last
@@ -73,9 +83,14 @@ final class SSHConnectionController {
         reconnectTimer = nil
     }
 
-    private func startTimer() {
+    private func startTimer(interval: TimeInterval? = nil) {
         stop()
-        let t = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in self?.tick() }
+        let every = interval ?? pollInterval
+        let t = Timer(timeInterval: every, repeats: true) { [weak self] _ in self?.tick() }
+        // Let the OS coalesce these with other timers. Nothing here needs to
+        // land on an exact deadline, and without a tolerance every connected
+        // tab forces its own wakeup of the main run loop.
+        t.tolerance = every * 0.5
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
@@ -298,8 +313,9 @@ final class SSHConnectionController {
         if let host = model.host {
             HostPlatformDetector.probeIfNeeded(host)
         }
-        // Keep watching for the session ending (no log reset).
-        startTimer()
+        // Keep watching for the session ending (no log reset), but at the slow
+        // connected rate -- this timer outlives the connection card.
+        startTimer(interval: connectedPollInterval)
     }
 
     private func fail(_ failure: SSHFailure) {
