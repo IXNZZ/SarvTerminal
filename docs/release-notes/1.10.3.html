@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sarv Terminal 1.10.3</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Sarv Terminal 1.10.3</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+  <h2>Release</h2>
+  <ul>
+    <li>sign the app with its entitlements so shipped builds stop losing them</li>
+  </ul>
+  <h2>Build</h2>
+  <ul>
+    <li>keep com.sarv.terminal on ReleaseLocal, which is the configuration that ships</li>
+    <li>give ReleaseLocal its own bundle id so it can't revoke the shipping app's permissions</li>
+  </ul>
+  <h2>SSH</h2>
+  <ul>
+    <li>poll a connected session every 2s instead of 0.2s so tabs stop flooding the main run loop</li>
+    <li>detect a dropped session from the core process state so background tabs auto-reconnect</li>
+  </ul>
+  <h2>Queue</h2>
+  <ul>
+    <li>wake the consumer before a bounded push can block so the app can't deadlock</li>
+  </ul>
+</body>
+</html>
