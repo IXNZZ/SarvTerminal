@@ -143,8 +143,36 @@ echo "=== Signing ==="
   sign "$APP/Contents/Frameworks/Sparkle.framework"
 }
 for p in "$APP"/Contents/PlugIns/*; do [[ -e "$p" ]] && sign "$p"; done
-sign "$APP"
+# The main app must be re-signed WITH its entitlements. `codesign --force`
+# replaces a signature wholesale rather than amending it, so signing here
+# without --entitlements silently strips whatever Xcode embedded at build time.
+# That is how 1.10.0 shipped with hardened runtime and ZERO entitlements while
+# upstream Ghostty ships all seven -- same entitlements file, same runtime
+# flags, one missing flag. Symptom: macOS REFUSES the gated services (Apple
+# Events/automation, mic, camera, Contacts, Calendar, Location, Photos)
+# instead of prompting, so nothing ever surfaces to say a permission is
+# missing. Upstream's release workflow signs the bundle the same way:
+#   codesign -f -s "$CERT" -o runtime --entitlements macos/Ghostty.entitlements
+#
+# Ghostty.entitlements (not GhosttyReleaseLocal.entitlements) is deliberate.
+# `zig build` drives the ReleaseLocal Xcode configuration (see
+# src/build/GhosttyXcodebuild.zig), so the bundle is BUILT as ReleaseLocal --
+# but this final signature is what ships, and it must carry the upstream
+# shipping set. The ReleaseLocal file additionally grants
+# cs.disable-library-validation for local builds; that weakens the shipped app
+# and upstream does not ship it. Dropping it is a no-op for existing users:
+# today's release already runs with library validation enforced (hardened
+# runtime + no entitlements at all), so this only ADDS the seven.
+#
+# Nested code (Sparkle, plug-ins) keeps its own signature and must NOT inherit
+# the app's entitlements, so only this last call passes them.
+sign --entitlements macos/Ghostty.entitlements "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+# Fail loudly if the entitlements did not survive signing -- the failure mode is
+# otherwise invisible until the OS refuses something at runtime.
+codesign --display --entitlements :- "$APP" 2>/dev/null | grep -q "apple-events" || {
+  echo "FAIL: signed app carries no entitlements"; exit 1; }
+echo "OK: entitlements present in signed app"
 echo "✓ Signed: $(codesign -dv "$APP" 2>&1 | grep '^Authority' | head -1)"
 
 # ── Package DMG ────────────────────────────────────────────────────────
