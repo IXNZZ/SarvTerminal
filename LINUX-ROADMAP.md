@@ -2082,34 +2082,6 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Open a host, click into Tags: the list appears. Click empty panel background — list closes and the focus ring clears. Click a suggestion row — the tag commits (it must **not** be swallowed as an outside click). Click directly on the **Description** field that sits *under* the open list — focus must land in Description, not in whatever moves into that spot after the list collapses. Tab into and out of Tags — no stale list, and no watcher left behind after closing the editor.
 
-## 42. A non-production build must never claim the production app identity
-
-**What it is.** Every build configuration gets its own application identity, and only the configuration that ships may use the production one. On macOS: `Release` = `com.sarv.terminal` (the only one signed with the Developer ID cert), `Debug` = `com.sarv.terminal.debug`, `ReleaseLocal` = `com.sarv.terminal.local`. `ReleaseLocal` exists to build a *release-optimized* core locally without the signing identity, so it is ad-hoc signed — which is exactly why it must not borrow the shipping identity.
-
-**Symptom.** The user is working in a directory the OS guards behind a permission prompt (Downloads). It works. Then, mid-session, the **installed release app** starts reporting it has no permission for that directory. Nothing in the app changed, nothing was revoked by hand, and re-launching does not fix it. The apparent randomness is what makes this expensive to diagnose: the trigger is a developer launching a *different* binary, so from the user's seat the permission simply evaporates.
-
-**Root cause & reasoning.** The OS permission store keys a grant to the application identity **plus a cryptographic identity check** — on macOS, TCC stores the bundle id together with the code-signing designated requirement. Two builds that share a bundle id but differ in signature are, to that store, the same app that has been *tampered with*. Launching the ad-hoc build makes the OS decide the recorded grant no longer matches the binary claiming it, and the grant is dropped for both. Diagnosis is `codesign -dv` on each copy: the shipping app shows `flags=0x10000(runtime)` with `TeamIdentifier=<team>`, while the local build shows `flags=0x10002(adhoc,runtime)` and `TeamIdentifier=not set` under the *same* `Identifier=`. The general rule — true on any platform with a permission store — is that **app identity is a primary key into user-granted state**, so reusing it across differently-signed builds corrupts that state.
-
-**Platform-agnostic logic.**
-1. Give every build configuration a distinct application id. Derive the non-production ones by suffixing the production id (`.debug`, `.local`) so they sort together and are obviously subordinate.
-2. Audit **all** configurations when touching build settings, not just the one being edited — the collision is invisible in the configuration you are looking at.
-3. Never gate runtime behavior (config directory, keychain/secret service name, data dir) on the app id string. Gate on a **compile-time** build flag instead, so changing an id can never silently move a user's data. (Our `AppIdentity` already does this: the id is read from the bundle at runtime for display, but the data paths branch on `#if DEBUG`.)
-4. Stale build outputs count. A previously-built app bundle sitting in a build directory still has whatever id it was compiled with, and launching it once is enough. After fixing the setting, delete the old output.
-5. Verify by asking the OS which installed apps claim the production id — exactly one answer, the installed release app.
-
-**macOS→Linux/GTK equivalents.**
-
-| macOS | Why | Linux/GTK |
-|---|---|---|
-| `PRODUCT_BUNDLE_IDENTIFIER` per Xcode configuration | The identity itself | The Flatpak **app-id** (`com.sarv.Terminal`) / `.desktop` file basename / D-Bus well-known name / `GApplication` application-id. Use `com.sarv.Terminal.Devel` for local builds — the Flatpak convention already expects a `.Devel` suffix. |
-| TCC store keyed by bundle id + designated requirement | Where the grants live | The **xdg-desktop-portal permission store** (`~/.local/share/flatpak/db/`), keyed by app-id. Flatpak has no per-build signature check, so the failure is quieter but worse: a dev build sharing the app-id silently **inherits and mutates** the release app's granted portal permissions instead of invalidating them. |
-| `codesign -dv <app>` to compare `Identifier`/`TeamIdentifier`/`flags` | Diagnosis | `flatpak info <app-id>` and `flatpak permission-show <app-id>`; for a plain build, check the `.desktop` id and `g_application_get_application_id()`. |
-| `mdfind "kMDItemCFBundleIdentifier == 'com.sarv.terminal'"` | Rule 5 — prove only one app claims it | `flatpak list --app --columns=application` (expect the production id once), plus `ls ~/.local/share/applications` for stray desktop files. |
-| `#if DEBUG` gating in `AppIdentity` for config/keychain paths | Rule 3 — id changes must not move user data | The same guard via a Meson/Zig build option; keep `~/.config/<fixed-name>` and the Secret Service collection name constant per *build type*, never derived from the app-id string. |
-| GATEKEEPER: ad-hoc (`codesign -s -`) vs Developer ID | Why the two builds differ at all | No direct analogue — Flatpak builds are unsigned by default and repos are GPG-signed as a whole. The lesson transfers even though the mechanism does not: **distinct app-id per build type, always.** |
-
-**Verify on Linux.** Install the release Flatpak, grant it a portal permission (e.g. pick a file outside the sandbox, or grant home access). Build and run the devel Flatpak. Then re-run the release app: its permission must be untouched, and `flatpak permission-show` must list two *separate* app-ids with independent entries. Then confirm the devel build writes to its own config dir and its own secret-store collection — dropping a marker file in each and checking they never cross is enough.
-
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
