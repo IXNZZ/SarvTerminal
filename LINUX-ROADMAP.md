@@ -2108,6 +2108,41 @@ The insight to port: keepalive probes are a **liveness policy, not a transport r
 
 **Verify on Linux.** Connect a host through the popup and start something long-lived on it (`redis-cli`, `top`). Now stall the link *without* killing it — drop the flow with `sudo iptables -I OUTPUT -p tcp --dport 22 -j DROP` for ~60 s, then remove the rule: **the session and `redis-cli` must survive**. Repeat with the rule left in for >3 min: ssh now exits, the popup detects it and auto-reconnects. Confirm the argv with `ps -o args= -C ssh | head`: exactly one `ServerAliveInterval=30 ServerAliveCountMax=6` pair on hosts with no keepalive set, and the user's own values (untouched) on hosts that configure one.
 
+## 43. An auto-reconnect must announce itself in the replacement terminal
+
+**What it is.** When a connected SSH session drops, the connection supervisor recovers it automatically: it builds a **brand-new surface** running a fresh `ssh` and swaps it into the pane's slot in the split tree. The tab keeps its name, its position and its host — only the terminal underneath is new.
+
+**Symptom.** The user leaves a tab idle with `redis-cli` running on the server, comes back, and finds a working shell prompt on the right host with redis gone. It reads as "the tool died but my server connection is fine", when in fact the whole session died and was rebuilt. Every trace of the drop is missing: ssh's own `Connection to <host> closed.` scrolled away with the surface that was replaced.
+
+**Root cause & reasoning.** Three mechanisms compound into total invisibility:
+1. **Surface replacement discards scrollback.** A new surface starts with an empty screen, so the replacement pane cannot contain the evidence by construction. (This is also what makes the recovery seamless — don't fix it by keeping dead panes around.)
+2. **No notification for a recovery that works.** Alerting only after N failed attempts is right (a blip that self-heals needs no interruption), but it means the *successful* first-try reconnect — by far the common case — is announced nowhere.
+3. **The relaunch wipes its own audit trail.** The connection log is reset at the start of every launch, so the attempt that fixes the problem erases the "Session closed" / "Auto-reconnecting" entries that explain it.
+
+The user-facing consequence is worse than the drop itself: remote processes are *expected* to die with their session, but only if the user can tell the session died. A recovery that is indistinguishable from an untouched session turns a normal SSH fact into an unexplainable application bug.
+
+**Platform-agnostic logic.**
+1. **Record the instant a CONNECTED session ends.** That timestamp doubles as the flag meaning "the next launch in this pane is a *recovery*, not a fresh connect" — which is what separates it from a first connect or a retry after a rejected password (neither gets a banner).
+2. **Print a banner into the replacement terminal** before the new ssh takes over: the endpoint, when the old session ended, how long ago, the attempt number, and — explicitly — that this is a **new shell**, so anything the old one was running is gone. Dim it; it is metadata, not output.
+3. **The banner must be printed by the child process, not written into the pty.** Writing to the pty sends bytes *to the remote shell as keystrokes*. The practical route is to wrap the launch in a shell that prints and then `exec`s ssh (so no extra process survives). **Check how your apprt splices the configured command first**: on macOS it is interpolated into `exec -l <command>` (`src/termio/Exec.zig`), where a bare `printf ...; ssh ...` would exec `printf` and never reach ssh — hence the inner `bash --noprofile --norc -c '<printf>; exec <ssh>'`. Verify the splice on Linux before assuming the same shape, and keep the startup-file suppression so the user's rc files can't run in this shell.
+4. **Pass the text as printf *arguments*, never as the format string** — one `%s` conversion that printf cycles over every line. A host label containing `%` or a backslash must print literally, and each argument must be shell-quoted.
+5. **Keep the connection log across a recovery relaunch**; clear it only for a fresh connect, so the drop and every retry stay readable.
+6. **Clear the "recovering" marker only once the replacement is actually connected**, so repeated failed attempts each re-announce with the *original* drop time and a rising attempt count.
+7. **Keep the banner out of the terminal scraper's way.** The supervisor watches the terminal text for auth failures and for a shell prompt; the banner is on screen during the handshake. It must contain none of the failure phrases, and no line may end with a prompt character (`$ # % > `) or the handshake will be declared connected early.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `VaultsTabsModel.launchSSHConnection` replacing the pane's node in `surfaceTree` with a new `Ghostty.SurfaceView` | The act that discards the scrollback | The GTK split-tree pane replacement. Same consequence, same need for the banner — this is not an AppKit artifact. |
+| `SurfaceConfiguration.command`, spliced into `exec -l <command>` by `Exec.zig` | Rule 3 — the wrapper decides whether a compound command survives | Same core, **different branch**: the non-macOS path has no `/usr/bin/login` wrapper. Read `Exec.zig`'s shell-command branch and confirm how the string is handed to `$SHELL -c` before reusing the `bash -c` shape. |
+| `SSHConnectionModel.disconnectedAt` (`Date?` on the observable model) | Rules 1 and 6 — one field is both the timestamp and the "is a recovery" flag | A nullable timestamp field on the connection state struct. |
+| `SSHReconnectBanner` — pure `lines()` + `printfCommand()`, no I/O | Rules 2 and 4, and it keeps the text unit-testable without a terminal | A pure Zig function returning the lines and the command; test the `%`/quote cases directly. |
+| `DateFormatter` pinned to `en_US_POSIX` for `HH:mm:ss` | A fixed clock format must not be bent into 12-hour by the user's region | `std.fmt` on the broken-down time — no locale involved, so this hazard disappears. |
+| `ActivityLog` "Disconnected from X" / "Connected to X" pair | The durable record, independent of any surface | The GTK activity log. Keep logging both sides — it is what makes a past incident diagnosable. |
+
+**Verify on Linux.** Connect a host, run `redis-cli` (or `top`) on it, then kill the session from the server side (`sudo ss -K dst <your-ip> dport = 22`) or locally (`pkill -f 'ssh .*<host>'`). The pane must be replaced **and** the top of the new terminal must show both dim lines with the correct drop time, elapsed age and attempt number — then the fresh prompt. Check the guards: give a host a label/username containing `%s` and a single quote and confirm it prints literally and ssh still connects; confirm the handshake is not declared connected early (the banner is on screen while ssh authenticates); open "Show logs" after the recovery and confirm the drop and retry entries survived; confirm the activity log holds a Disconnected/Connected pair. Finally, a *first* connect and a wrong-password retry must show **no** banner.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

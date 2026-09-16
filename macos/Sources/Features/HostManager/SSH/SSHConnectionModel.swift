@@ -49,6 +49,12 @@ final class SSHConnectionModel: ObservableObject {
     /// it alone", so a wake / network-return nudge doesn't reconnect behind
     /// their back. Cleared by any deliberate reconnect and by a successful one.
     var autoReconnectStopped = false
+    /// When a session that HAD connected ended. Set on the drop, cleared once
+    /// the replacement session is up. It marks "this launch is replacing a
+    /// session the user lost" — which is what drives the reconnect banner
+    /// (`SSHReconnectBanner`) and keeps the connection log across the relaunch,
+    /// so a silent recover can't look like nothing happened.
+    var disconnectedAt: Date?
 
     /// True when we already have a password (saved) so the first attempt needs
     /// no field and shows no card while connecting.

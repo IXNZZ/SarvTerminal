@@ -828,7 +828,8 @@ final class VaultsTabsModel: ObservableObject {
         return "\(shellQuote(exe)) +ssh \(flags.joined(separator: " ")) -- \(command.dropFirst(4))"
     }
 
-    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?, termOverride: String = "")
+    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?,
+                                termOverride: String = "", banner: [String] = [])
         -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
         var full = wrapSSHCommand(command, termOverride: termOverride)
         var passwordFile: String?
@@ -840,6 +841,17 @@ final class VaultsTabsModel: ObservableObject {
             // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
             let prefix = env.map { "\($0.key)='\($0.value)'" }.joined(separator: " ")
             if !prefix.isEmpty { full = "env \(prefix) \(full)" }
+        }
+        // A reconnect prints its banner into the fresh terminal before ssh takes
+        // over the pane. It has to go through an inner `bash -c` (with `exec`, so
+        // ssh still replaces that shell and we leave no parent hanging around):
+        // the command we hand libghostty is spliced into `exec -l <command>`
+        // (see Exec.zig), where a bare `printf …; ssh …` would exec printf and
+        // never reach ssh. `--noprofile --norc` for the same reason the outer
+        // wrapper uses them — the user's startup files must not run here.
+        let bannerCommand = SSHReconnectBanner.printfCommand(banner)
+        if !bannerCommand.isEmpty {
+            full = "/bin/bash --noprofile --norc -c \(shellQuote("\(bannerCommand); exec \(full)"))"
         }
         var cfg = Ghostty.SurfaceConfiguration()
         cfg.command = full
@@ -921,8 +933,20 @@ final class VaultsTabsModel: ObservableObject {
         // edited it), so changed port/options take effect on reconnect.
         let latestHost = model.host.flatMap { SavedHostsStore.shared.host(withID: $0.id) } ?? model.host
         let command = latestHost.map { $0.sshCommand(staged: true) } ?? conn.command
+        // Recovering a session the user LOST (rather than a first connect or a
+        // retry after a rejected password): the pane's terminal is replaced
+        // wholesale, taking the old scrollback -- and ssh's own "Connection to
+        // <host> closed." -- with it. Announce it in the replacement so the
+        // recovery can't pass for an untouched session.
+        let banner = model.disconnectedAt.map {
+            SSHReconnectBanner.lines(target: latestHost?.endpoint ?? model.title,
+                                     droppedAt: $0,
+                                     now: Date(),
+                                     attempt: model.reconnectAttempts)
+        } ?? []
         let made = makeSSHSurface(app: app, command: command, password: password,
-                                  termOverride: latestHost?.termOverride ?? "")
+                                  termOverride: latestHost?.termOverride ?? "",
+                                  banner: banner)
         applyHostTheme(model.host, to: made.surface)
         // Replace only this pane's node — works whether it's the whole tab or one
         // pane of a split.

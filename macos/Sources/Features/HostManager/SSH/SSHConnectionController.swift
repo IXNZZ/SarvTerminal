@@ -59,11 +59,7 @@ final class SSHConnectionController {
         return "Session"
     }
     /// `user@host:port` for the activity log detail line.
-    private var activityDetail: String {
-        guard let h = model.host else { return "" }
-        let user = h.username.isEmpty ? "" : "\(h.username)@"
-        return "\(user)\(h.hostname):\(h.port)"
-    }
+    private var activityDetail: String { model.host?.endpoint ?? "" }
 
     // MARK: Lifecycle
 
@@ -71,7 +67,10 @@ final class SSHConnectionController {
         startTime = Date()
         authNoted = false
         model.hostKeyResponded = false
-        model.logEntries = []
+        // A relaunch that is recovering a dropped session KEEPS the log, so the
+        // drop and every retry stay readable in "Show logs" instead of being
+        // wiped by the attempt that fixes them. Only a fresh connect starts empty.
+        if model.disconnectedAt == nil { model.logEntries = [] }
         model.addLog("network", .secondary, "Connecting to \(hostLabel)")
         startTimer()
     }
@@ -269,6 +268,7 @@ final class SSHConnectionController {
             if sessionEnded(sv) {
                 model.addLog("xmark.octagon.fill", .red, "Session closed")
                 ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
+                model.disconnectedAt = Date()
                 model.stage = .disconnected
                 stop()
                 // A dropped session (server restart, network loss) recovers on
@@ -301,6 +301,8 @@ final class SSHConnectionController {
         model.autoReconnectStopped = false
         model.reconnectAttempts = 0
         model.reconnectSecondsRemaining = 0
+        // The replacement session is up: this connection is no longer "recovering".
+        model.disconnectedAt = nil
         // "Continue" (connect without saving): drop the key we just added.
         if let token = model.pendingHostKeyRemoval {
             model.pendingHostKeyRemoval = nil
@@ -366,6 +368,7 @@ final class SSHConnectionController {
         case .connected:
             model.addLog("xmark.octagon.fill", .red, "Session closed")
             ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
+            model.disconnectedAt = Date()
             model.stage = .disconnected
             stop()
             // No notification on a normal close — scheduleReconnect() only alerts

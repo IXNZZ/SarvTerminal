@@ -162,6 +162,13 @@ struct SavedHost: Codable, Identifiable, Hashable {
         return parts.joined(separator: " · ")
     }
 
+    /// "deploy@10.0.1.10:2222" — the compact `user@host:port` form used wherever
+    /// we name the far end in plain text (activity log detail, reconnect banner).
+    var endpoint: String {
+        let user = username.isEmpty ? "" : "\(username)@"
+        return "\(user)\(hostname):\(port)"
+    }
+
     /// Builds the shell command we run when the user opens a session.
     /// All knobs become explicit `-o Key=Value` so the host doesn't
     /// have to be present in `~/.ssh/config`.
