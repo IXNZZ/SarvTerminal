@@ -2082,6 +2082,32 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Open a host, click into Tags: the list appears. Click empty panel background — list closes and the focus ring clears. Click a suggestion row — the tag commits (it must **not** be swallowed as an outside click). Click directly on the **Description** field that sits *under* the open list — focus must land in Description, not in whatever moves into that spot after the list collapses. Tab into and out of Tags — no stale list, and no watcher left behind after closing the editor.
 
+## 42. Don't let a keepalive kill a session that a blip would have survived
+
+**What it is.** The guided (popup) connect builds its own `ssh` command line so a host needn't exist in `~/.ssh/config`. When the saved host has **no** keepalive configured, we inject one anyway — not for the server's benefit, but so the popup can *detect* a dead link and start its auto-reconnect instead of sitting on a dead socket.
+
+**Symptom.** A user connects to a server, starts `redis-cli` on it, leaves the tab idle for a while, and comes back to a healthy shell prompt on the right host — but the redis session is gone. Reported as "redis disconnects while the server stays connected", with "this never happens in Terminal.app". Nothing in the terminal explains it.
+
+**Root cause & reasoning.** The SSH session *did* die; it only looked alive because the recovery is invisible (section 43). It died because the injected keepalive was `ServerAliveInterval=15` + `ServerAliveCountMax=3`: **ssh gives up after ~45 s** of unanswered probes and exits. Plain `ssh` — no keepalive, which is what Terminal.app runs — sends no probes at all, so a Wi-Fi roam, a VPN re-key, a NAT rebind or a briefly-overloaded server is ridden out by TCP retransmission and the session survives. Ours declared the link dead on a stall the session would have outlived. ssh exiting kills the remote login shell and **every child of it** — `redis-cli`, `psql`, an editor, a `tail -f`.
+
+The insight to port: keepalive probes are a **liveness policy, not a transport requirement**. `Interval × CountMax` is a deadline on how long a stalled link is allowed to stall before we call it dead. Too short and the app becomes *less* reliable than no keepalive at all — it converts survivable stalls into killed sessions. Too long (or absent) and a genuinely dead socket hangs forever, and an idle NAT silently drops the flow. Don't remove the keepalive; size the deadline.
+
+**Platform-agnostic logic.**
+1. Inject a keepalive **only** when the host has none configured. An explicit user setting always wins, untouched.
+2. Budget about **3 minutes** (`Interval=30`, `CountMax=6`), not 45 s. Frequent enough that an idle NAT/firewall keeps the flow, patient enough to outlast a roam, a re-key or a load spike.
+3. Whatever the numbers, they belong in **one** place — the single function that builds the ssh argv. Every path that spawns a guided connect (first connect, reconnect, "reconnect all") must go through it, or hosts drift apart.
+4. A keepalive is only worth injecting where something *acts* on the detection. A plain unmanaged terminal doesn't need it.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `SavedHost.sshCommand(staged:)` — every knob rendered as an explicit `-o Key=Value` | One builder, so the numbers can't drift between connect paths | The same: one Zig function over the saved-host struct producing the argv. No toolkit involved — this is pure policy, so port the values verbatim. |
+| `serverAliveIntervalSeconds == 0` meaning "not configured" | Distinguishes "user chose nothing" from "user chose a value" | Same sentinel in the host struct; `0` must keep meaning *disabled/unset*, never *use 0*. |
+| `staged` flag (guided popup connect) gating the injection | Only the managed path has a supervisor to act on the detection | Whatever flag the GTK connect popup passes for a supervised launch. |
+
+**Verify on Linux.** Connect a host through the popup and start something long-lived on it (`redis-cli`, `top`). Now stall the link *without* killing it — drop the flow with `sudo iptables -I OUTPUT -p tcp --dport 22 -j DROP` for ~60 s, then remove the rule: **the session and `redis-cli` must survive**. Repeat with the rule left in for >3 min: ssh now exits, the popup detects it and auto-reconnects. Confirm the argv with `ps -o args= -C ssh | head`: exactly one `ServerAliveInterval=30 ServerAliveCountMax=6` pair on hosts with no keepalive set, and the user's own values (untouched) on hosts that configure one.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

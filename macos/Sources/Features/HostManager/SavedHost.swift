@@ -193,8 +193,17 @@ struct SavedHost: Codable, Identifiable, Hashable {
             // a default so a session killed by sleep / network loss is DETECTED
             // (ssh exits within ~ServerAliveInterval × ServerAliveCountMax) and
             // the popup can auto-reconnect, instead of hanging on a dead socket.
-            args.append("-o ServerAliveInterval=15")
-            args.append("-o ServerAliveCountMax=3")
+            //
+            // 30 × 6 = ~3 minutes before ssh declares the link dead. The old
+            // 15 × 3 (~45s) was trigger-happy: a Wi-Fi roam, a VPN re-key, a NAT
+            // rebind or a briefly-loaded server made ssh EXIT on a stall that
+            // plain `ssh` (no keepalive, as in Terminal.app) rides out via TCP
+            // retransmission — killing the remote login shell and every child of
+            // it (redis-cli, psql, an editor) for a blip the session would
+            // otherwise have survived. Still frequent enough to keep an idle NAT
+            // from dropping the flow, and a genuinely dead link is still caught.
+            args.append("-o ServerAliveInterval=30")
+            args.append("-o ServerAliveCountMax=6")
         }
         // For a staged (popup) connect we use `accept-new`: the GUI host-key
         // trust prompt is handled PRE-FLIGHT (via ssh-keyscan) before this ssh
