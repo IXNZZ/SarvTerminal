@@ -720,10 +720,10 @@ struct CursorForm: Equatable {
         self.style = CursorStyleOption(rawValue: config?.cursorStyle ?? "block") ?? .block
 
         let blinkSetting = config?.cursorStyleBlink
-        switch blinkSetting {
-        case nil:    self.blink = .systemDefault
-        case true:   self.blink = .on
-        case false:  self.blink = .off
+        if let blinkSetting {
+            self.blink = blinkSetting ? .on : .off
+        } else {
+            self.blink = .systemDefault
         }
 
         let txt = config?.cursorText

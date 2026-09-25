@@ -2143,6 +2143,82 @@ The user-facing consequence is worse than the drop itself: remote processes are 
 
 **Verify on Linux.** Connect a host, run `redis-cli` (or `top`) on it, then kill the session from the server side (`sudo ss -K dst <your-ip> dport = 22`) or locally (`pkill -f 'ssh .*<host>'`). The pane must be replaced **and** the top of the new terminal must show both dim lines with the correct drop time, elapsed age and attempt number — then the fresh prompt. Check the guards: give a host a label/username containing `%s` and a single quote and confirm it prints literally and ssh still connects; confirm the handshake is not declared connected early (the banner is on screen while ssh authenticates); open "Show logs" after the recovery and confirm the drop and retry entries survived; confirm the activity log holds a Disconnected/Connected pair. Finally, a *first* connect and a wrong-password retry must show **no** banner.
 
+## 44. Saved-host jumps, fuzzy host search, SSH actions & modal keyboard flow
+
+### Symptom
+
+Host jumps previously accepted a free-form `user@bastion` string, which meant a
+saved Host's port, authentication method, host-key policy and password could
+not be reused. Host search was simple field filtering with weak ordering, so
+abbreviations such as `htest`, `hpa` and `jh` were not useful. The Vaults
+window also had reconnect and password-entry behavior that was either missing
+or hard-coded outside the settings keybind list, and confirmation cards needed
+mouse clicks even when a default action was obvious.
+
+### Root cause & reasoning
+
+The jump setting stored an endpoint string instead of a relationship to the
+Host record that owns the endpoint policy. Search treated the query as a
+literal substring rather than a sequence of meaningful characters, and sorted
+different row types before relevance. Reconnect/password actions were handled
+beside the app shortcut store, so the settings screen could not describe the
+actual behavior. Finally, SwiftUI's default-button keyboard shortcut is not
+reliable when a modal panel has no editable first responder.
+
+### Platform-agnostic logic
+
+- A saved Host stores an optional jump-host ID. Resolving that ID at connect
+  time supplies the selected Host's endpoint options; legacy free-form values
+  remain readable for backward compatibility.
+- Build the jump transport as a nested SSH proxy command. Give the target and
+  jump processes separate askpass roles and password files, and never send the
+  jump password into the target shell. An explicit reconnect refreshes saved
+  Host values before relaunching.
+- Rank host candidates by exact match, prefix, substring and ordered fuzzy
+  subsequence. Weight label/alias above hostname, username, tags and notes;
+  merge saved and discovered Hosts with saved Hosts first and deduplicate by
+  endpoint.
+- Keep reconnect and password-fill as app-level actions in the same shortcut
+  store used by Settings. The defaults are `Cmd+R` and `Cmd+P`; password fill
+  only acts on a connected SSH pane with a target password, writes directly to
+  the terminal input path, and submits a real Enter key event. It must not use
+  the clipboard or consume the key for local/key-only sessions.
+- The embedded Vaults navigation assigns the simpler `Cmd+[` / `Cmd+]` pair to
+  previous/next tab and the shifted pair to previous/next split. The settings
+  catalog and reserved-combo table must use the same source of truth as the
+  event dispatcher.
+- A modal confirmation routes Return to the default (or first non-cancel)
+  button and Escape to cancel at the panel level. Text-field submission keeps
+  its current value; the behavior is shared by all confirmation cards.
+
+### macOS specifics → Linux/GTK equivalents
+
+| macOS | Linux / GTK |
+|---|---|
+| `SavedHost.proxyJumpHostID` resolves through `SavedHostsStore` | Store the same nullable Host reference in the GTK host model and resolve it before building the SSH argv. Keep legacy imported strings as a compatibility path. |
+| Nested `ssh -W %h:%p` plus role-aware `SSH_ASKPASS` files | Use the GTK apprt's SSH supervisor/askpass mechanism with separate target/jump credentials. Keep secrets out of argv, clipboard and the remote shell input. |
+| `SearchMatcher.rank` and `HostSearchPalette` | Reuse the same weighted exact/prefix/substring/subsequence scorer in the GTK host chooser; sort Hosts before actions and deduplicate saved/discovered endpoints. |
+| `AppKeybindStore` plus the fixed navigation table | Store app actions in the GTK shortcut model and use one dispatcher/catalog for execution, display and reserved-combo validation. |
+| `SarvAlert.ModalPanel.sendEvent` | Handle Return/Escape in the GTK dialog controller, while preserving Entry activation for dialogs that contain input. |
+
+### How to verify on Linux
+
+- Select a saved jump Host with a different port or password policy; connect
+  through it and confirm the target reaches the expected endpoint. Test an
+  `Ask` jump Host and verify its password prompt is separate from the target.
+- In the host chooser, verify `test` matches `hc-test` and `zx_test`, `htest`
+  matches `hc-test`, `hpa` matches `hc-prod-api`, and `jh` matches `JumpHost`.
+  Saved Hosts must appear before quick-connect or local actions.
+- With a connected password-authenticated SSH pane, press the configured
+  password shortcut at a sudo/password prompt; the password must be submitted
+  without changing the clipboard. Local and key-only panes must leave the key
+  untouched. Reconnect must affect only the focused SSH pane.
+- Confirm the settings page shows the same tab/split pairs used at runtime and
+  rejects assigning reserved navigation combinations to another action.
+- Open every confirmation dialog, including close-terminal, with and without
+  an Entry. Return must confirm, Escape must cancel, and text input must be
+  preserved when submitted.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

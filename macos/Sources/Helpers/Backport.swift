@@ -107,6 +107,7 @@ enum BackportPointerStyle {
 enum BackportGlass {
     case regular, clear
 
+#if compiler(>=6.2)
     @available(macOS 26, *)
     var official: Glass {
         switch self {
@@ -114,6 +115,7 @@ enum BackportGlass {
         case .clear: return .clear
         }
     }
+#endif // compiler(>=6.2)
 }
 
 /// Backported `TextField` that supports text selection on macOS 26 and up. The `selection`

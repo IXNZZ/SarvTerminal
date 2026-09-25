@@ -53,6 +53,10 @@ enum SarvAlert {
         var chosen = Result(buttonIndex: fallbackIndex, rememberChecked: false)
 
         let panel = makePanel()
+        let choose: (Int, Bool, String) -> Void = { index, remember, text in
+            chosen = Result(buttonIndex: index, rememberChecked: remember, inputText: text)
+            NSApp.stopModal()
+        }
         let root = SarvAlertView(
             title: title,
             message: message,
@@ -60,11 +64,13 @@ enum SarvAlert {
             rememberTitle: rememberTitle,
             rememberInitial: rememberInitial,
             inputInitial: inputInitial) { index, remember, text in
-                chosen = Result(buttonIndex: index, rememberChecked: remember, inputText: text)
-                NSApp.stopModal()
+                choose(index, remember, text)
             }
 
         install(root, in: panel)
+        configureKeyboardHandling(for: panel, buttons: buttons) { index in
+            choose(index, false, "")
+        }
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -111,6 +117,12 @@ enum SarvAlert {
         precondition(!buttons.isEmpty, "SarvAlert requires at least one button")
         let panel = makePanel()
         var finished = false
+        let choose: (Int, Bool, String) -> Void = { index, remember, text in
+            guard !finished else { return }
+            finished = true
+            parent.endSheet(panel)
+            completion(Result(buttonIndex: index, rememberChecked: remember, inputText: text))
+        }
         let root = SarvAlertView(
             title: title,
             message: message,
@@ -118,13 +130,13 @@ enum SarvAlert {
             rememberTitle: rememberTitle,
             rememberInitial: false,
             inputInitial: inputInitial) { index, remember, text in
-                guard !finished else { return }
-                finished = true
-                parent.endSheet(panel)
-                completion(Result(buttonIndex: index, rememberChecked: remember, inputText: text))
+                choose(index, remember, text)
             }
 
         install(root, in: panel)
+        configureKeyboardHandling(for: panel, buttons: buttons) { index in
+            choose(index, false, "")
+        }
         parent.beginSheet(panel) { _ in }
         // A sheet runs in the normal run loop (not a nested runModal), so an
         // async assignment fires fine here — but do it after the sheet is on
@@ -161,6 +173,26 @@ enum SarvAlert {
         // it to the adaptive label color.
         if let editor = panel.fieldEditor(true, for: nil) as? NSTextView {
             editor.insertionPointColor = .labelColor
+        }
+    }
+
+    /// SwiftUI's `.keyboardShortcut(.defaultAction)` is not reliable when a
+    /// modal has no editable field to become first responder. Route Return and
+    /// Escape at the panel level so every confirmation card responds directly.
+    private static func configureKeyboardHandling(
+        for panel: NSPanel,
+        buttons: [Button],
+        choose: @escaping (Int) -> Void
+    ) {
+        guard let panel = panel as? ModalPanel else { return }
+        panel.defaultAction = {
+            guard let index = buttons.firstIndex(where: { $0.isDefault })
+                ?? buttons.firstIndex(where: { !$0.isCancel }) else { return }
+            choose(index)
+        }
+        panel.cancelAction = {
+            guard let index = buttons.firstIndex(where: { $0.isCancel }) else { return }
+            choose(index)
         }
     }
 
@@ -215,8 +247,36 @@ enum SarvAlert {
     /// Borderless panels can't become key by default, which would break keyboard
     /// shortcuts and button focus — so we force it.
     private final class ModalPanel: NSPanel {
+        var defaultAction: (() -> Void)?
+        var cancelAction: (() -> Void)?
+
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { true }
+
+        override func sendEvent(_ event: NSEvent) {
+            guard event.type == .keyDown else {
+                super.sendEvent(event)
+                return
+            }
+
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if modifiers.isEmpty, event.keyCode == 53 {
+                cancelAction?()
+                return
+            }
+
+            if modifiers.isEmpty, [36, 76].contains(event.keyCode) {
+                let editingText = (firstResponder as? NSTextField)?.isEditable == true
+                    || firstResponder is NSTextView
+                let focusedButton = firstResponder is NSButton
+                if !editingText && !focusedButton {
+                    defaultAction?()
+                    return
+                }
+            }
+
+            super.sendEvent(event)
+        }
     }
 }
 
@@ -340,7 +400,8 @@ private struct SarvAlertView: View {
     }
 
     private func chooseDefault() {
-        guard let idx = buttons.firstIndex(where: { $0.isDefault }) else { return }
+        guard let idx = buttons.firstIndex(where: { $0.isDefault })
+            ?? buttons.firstIndex(where: { !$0.isCancel }) else { return }
         onChoose(idx, remember, inputText)
     }
 }

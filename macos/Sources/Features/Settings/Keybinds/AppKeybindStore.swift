@@ -11,6 +11,8 @@ import AppKit
 /// ⌘T and ⌘L → command palette). Combos use Ghostty config format ("cmd+t").
 enum AppShortcutAction: String, CaseIterable {
     case commandPalette = "app:command_palette"
+    case reconnectSSH = "app:reconnect_ssh"
+    case fillSSHPassword = "app:fill_ssh_password"
     case newLocalTerminal = "app:new_local_terminal"
     case splitRight = "app:split_right"
     case splitDown = "app:split_down"
@@ -23,6 +25,8 @@ enum AppShortcutAction: String, CaseIterable {
     var label: String {
         switch self {
         case .commandPalette: return "New tab / command palette"
+        case .reconnectSSH: return "Reconnect SSH"
+        case .fillSSHPassword: return "Fill SSH password"
         case .newLocalTerminal: return "New Local Terminal Tab"
         case .splitRight: return "Split right (choose target)"
         case .splitDown: return "Split down (choose target)"
@@ -34,12 +38,14 @@ enum AppShortcutAction: String, CaseIterable {
         }
     }
 
-    /// Default combo(s) for this action. The command palette opens with both
-    /// ⌘T (new tab) and ⌘P (palette / Termius-style quick-connect search). We
+    /// Default combo(s) for this action. The command palette opens with ⌘T.
+    /// ⌘P is reserved for filling the current SSH host's password. We
     /// deliberately avoid ⌘K — that's a Ghostty default (clear screen).
     var defaultCombos: [String] {
         switch self {
-        case .commandPalette: return ["cmd+t", "cmd+p"]
+        case .commandPalette: return ["cmd+t"]
+        case .reconnectSSH: return ["cmd+r"]
+        case .fillSSHPassword: return ["cmd+p"]
         case .newLocalTerminal: return ["cmd+l"]
         case .splitRight: return ["cmd+d"]
         case .splitDown: return ["cmd+shift+d"]
@@ -72,6 +78,7 @@ final class AppKeybindStore: ObservableObject {
         }
         if didSeed { persist() }
         migrateCommandPalettePaletteKey()
+        migrateCommandPalettePKey()
         migrateSFTPKey()
     }
 
@@ -89,10 +96,9 @@ final class AppKeybindStore: ObservableObject {
         if !hasS { addCombo("cmd+shift+s", for: id) }
     }
 
-    /// One-time migration: an earlier build defaulted ⌘K → command palette,
-    /// which shadowed Ghostty's ⌘K (clear screen). Give ⌘K back to Ghostty and
-    /// use ⌘P (palette) instead — ⌘P is not a Ghostty default. The flag stops
-    /// this from re-adding a combo the user later removes on purpose.
+    /// Legacy migration: an earlier build defaulted ⌘K → command palette,
+    /// which shadowed Ghostty's ⌘K (clear screen). Give ⌘K back to Ghostty;
+    /// the later v3 migration removes the temporary ⌘P palette binding.
     private func migrateCommandPalettePaletteKey() {
         let flag = "SarvAppKeybinds.paletteKey.v2"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
@@ -102,6 +108,15 @@ final class AppKeybindStore: ObservableObject {
         let combos = bindings[id] ?? []
         let hasCmdP = combos.contains { KeybindParser.splitModsAndKey($0) == KeybindParser.splitModsAndKey("cmd+p") }
         if !hasCmdP { addCombo("cmd+p", for: id) }
+    }
+
+    /// One-time migration: ⌘P is now reserved for filling the current SSH
+    /// host password. Remove the old palette binding from existing installs.
+    private func migrateCommandPalettePKey() {
+        let flag = "SarvAppKeybinds.paletteKey.v3"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        removeCombo("cmd+p", for: AppShortcutAction.commandPalette.rawValue)
     }
 
     /// Load + migrate from the old single-combo format if present.

@@ -377,7 +377,7 @@ class BaseTerminalController: NSWindowController,
     func confirmCloseAsync(
         messageText: String,
         informativeText: String,
-        confirmButtonTitle: String = "Close",
+        confirmButtonTitle: String = "Close"
     ) async -> NSApplication.ModalResponse? {
         // If we already have an alert, we need to wait for that one.
         guard !alertActive else { return nil }

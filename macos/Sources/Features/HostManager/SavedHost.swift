@@ -31,7 +31,10 @@ struct SavedHost: Codable, Identifiable, Hashable {
     var serverAliveIntervalSeconds: Int     // 0 = disabled
     var useCompression: Bool
     var requestTTY: Bool
-    var proxyJump: String                   // "" = none
+    /// ID of the saved Host used as the jump server. `proxyJump` below is kept
+    /// for backwards compatibility with imported/older free-form values.
+    var proxyJumpHostID: UUID?
+    var proxyJump: String                   // legacy "" = none
     /// TERM advertised to the remote. "" = safe default (`xterm-256color`), which
     /// renders correctly on servers that lack the `xterm-ghostty` terminfo (fixes
     /// broken reverse-search etc.). "xterm-ghostty" opts this host into Ghostty's
@@ -133,6 +136,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
             serverAliveIntervalSeconds: 0,
             useCompression: false,
             requestTTY: false,
+            proxyJumpHostID: nil,
             proxyJump: "",
             localForwards: [],
             remoteForwards: [],
@@ -178,7 +182,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// connection popup), add `NumberOfPasswordPrompts=1` so a wrong password
     /// makes ssh exit immediately — giving the popup a clean failure + Reconnect
     /// instead of leaving ssh re-prompting in the background.
-    func sshCommand(staged: Bool = false) -> String {
+    func sshCommand(staged: Bool = false, jumpHost: SavedHost? = nil) -> String {
         var args: [String] = ["ssh"]
         if port != 22 { args.append("-p \(port)") }
         if !identityFile.isEmpty {
@@ -188,7 +192,17 @@ struct SavedHost: Codable, Identifiable, Hashable {
         if forwardAgent { args.append("-A") }
         if useCompression { args.append("-C") }
         if requestTTY { args.append("-t") }
-        if !proxyJump.isEmpty { args.append("-J \(shellQuote(proxyJump))") }
+        if let jumpHost {
+            // Use a nested ssh process instead of `-J user@host`: this lets the
+            // selected saved Host contribute its port, key, timeout, host-key
+            // policy and password/askpass environment.
+            let proxy = jumpProxyCommand(for: jumpHost, staged: staged)
+            let proxyOption = "ProxyCommand=\(proxy)"
+            args.append("-o \(shellQuote(proxyOption))")
+        } else if !proxyJump.isEmpty {
+            // Backwards compatibility for imported/older free-form values.
+            args.append("-J \(shellQuote(proxyJump))")
+        }
         if connectTimeoutSeconds > 0 {
             args.append("-o ConnectTimeout=\(connectTimeoutSeconds)")
         }
@@ -247,6 +261,33 @@ struct SavedHost: Codable, Identifiable, Hashable {
         return args.joined(separator: " ")
     }
 
+    /// Build the nested ssh side of a ProxyCommand for a selected saved Host.
+    /// The role marker lets the shared askpass helper distinguish the jump
+    /// password from the target password.
+    private func jumpProxyCommand(for jump: SavedHost, staged: Bool) -> String {
+        var args = ["env SARV_ASKPASS_ROLE=jump", "ssh", "-W %h:%p"]
+        if jump.port != 22 { args.append("-p \(jump.port)") }
+        if !jump.identityFile.isEmpty {
+            args.append("-i \(shellQuote(expandTilde(jump.identityFile)))")
+            args.append("-o IdentitiesOnly=yes")
+        }
+        if jump.forwardAgent { args.append("-A") }
+        if jump.useCompression { args.append("-C") }
+        if jump.connectTimeoutSeconds > 0 {
+            args.append("-o ConnectTimeout=\(jump.connectTimeoutSeconds)")
+        }
+        if jump.serverAliveIntervalSeconds > 0 {
+            args.append("-o ServerAliveInterval=\(jump.serverAliveIntervalSeconds)")
+            args.append("-o ServerAliveCountMax=3")
+        }
+        let keyPolicy = staged ? "accept-new" : jump.strictHostKeyChecking.rawValue
+        args.append("-o StrictHostKeyChecking=\(keyPolicy)")
+        if staged { args.append("-o NumberOfPasswordPrompts=1") }
+        let target = jump.username.isEmpty ? jump.hostname : "\(jump.username)@\(jump.hostname)"
+        args.append(shellQuote(target))
+        return args.joined(separator: " ")
+    }
+
     // MARK: - Codable (default-tolerant)
 
     /// Manual decoder so adding new fields later doesn't break old files.
@@ -268,6 +309,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
         serverAliveIntervalSeconds  = try c.decodeIfPresent(Int.self,            forKey: .serverAliveIntervalSeconds)  ?? 0
         useCompression              = try c.decodeIfPresent(Bool.self,           forKey: .useCompression)              ?? false
         requestTTY                  = try c.decodeIfPresent(Bool.self,           forKey: .requestTTY)                  ?? false
+        proxyJumpHostID             = try c.decodeIfPresent(UUID.self,            forKey: .proxyJumpHostID)
         proxyJump                   = try c.decodeIfPresent(String.self,         forKey: .proxyJump)                   ?? ""
         termOverride                = try c.decodeIfPresent(String.self,         forKey: .termOverride)                ?? ""
         remotePath                  = try c.decodeIfPresent(String.self,         forKey: .remotePath)                  ?? ""
@@ -291,7 +333,8 @@ struct SavedHost: Codable, Identifiable, Hashable {
         password: String,
         forwardAgent: Bool, strictHostKeyChecking: HostKeyChecking,
         connectTimeoutSeconds: Int, serverAliveIntervalSeconds: Int,
-        useCompression: Bool, requestTTY: Bool, proxyJump: String,
+        useCompression: Bool, requestTTY: Bool, proxyJumpHostID: UUID?,
+        proxyJump: String,
         localForwards: [String], remoteForwards: [String], dynamicForwardPort: Int,
         initialCommand: String, groupID: UUID?, group: String, tags: [String],
         themeName: String,
@@ -306,6 +349,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
         self.connectTimeoutSeconds = connectTimeoutSeconds
         self.serverAliveIntervalSeconds = serverAliveIntervalSeconds
         self.useCompression = useCompression; self.requestTTY = requestTTY
+        self.proxyJumpHostID = proxyJumpHostID
         self.proxyJump = proxyJump; self.localForwards = localForwards
         self.remoteForwards = remoteForwards
         self.dynamicForwardPort = dynamicForwardPort

@@ -156,7 +156,8 @@ final class SSHConnectionController {
     // MARK: Popup actions
 
     func submitPassword() {
-        tabsModel?.launchSSHConnection(for: model, password: model.passwordField)
+        tabsModel?.launchSSHConnection(for: model, password: model.passwordField,
+                                       jumpPassword: model.jumpPasswordField)
     }
 
     func reconnect() { tabsModel?.reconnect(for: model) }
@@ -168,7 +169,8 @@ final class SSHConnectionController {
         reconnectTimer = nil
         model.autoReconnectStopped = false
         model.reconnectSecondsRemaining = 0
-        tabsModel?.launchSSHConnection(for: model, password: model.passwordField)
+        tabsModel?.launchSSHConnection(for: model, password: model.passwordField,
+                                       jumpPassword: model.jumpPasswordField)
     }
 
     /// Stop the automatic reconnect loop (the "Stop" button); the user can still
@@ -215,7 +217,8 @@ final class SSHConnectionController {
         }
         model.reconnectSecondsRemaining = 0
         reconnectTimer?.invalidate(); reconnectTimer = nil
-        tabsModel?.launchSSHConnection(for: model, password: model.passwordField)
+        tabsModel?.launchSSHConnection(for: model, password: model.passwordField,
+                                       jumpPassword: model.jumpPasswordField)
     }
 
     // MARK: Polling

@@ -1876,7 +1876,7 @@ extension Ghostty {
         private static func showChildExited(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
-            v: ghostty_surface_message_childexited_s,
+            v: ghostty_surface_message_childexited_s
         ) -> Bool {
             switch target.tag {
             case GHOSTTY_TARGET_SURFACE:

@@ -17,7 +17,14 @@ enum SSHAskpass {
         // here — the app removes it on connect / close / relaunch.
         let script = """
         #!/bin/sh
-        cat "$SARV_ASKPASS_FILE"
+        role="${SARV_ASKPASS_ROLE:-target}"
+        if [ "$role" = "jump" ] && [ -n "$SARV_ASKPASS_JUMP_FILE" ]; then
+            cat "$SARV_ASKPASS_JUMP_FILE"
+        elif [ -n "$SARV_ASKPASS_TARGET_FILE" ]; then
+            cat "$SARV_ASKPASS_TARGET_FILE"
+        else
+            cat "$SARV_ASKPASS_FILE"
+        fi
         """
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -55,5 +62,43 @@ enum SSHAskpass {
             "SSH_ASKPASS_REQUIRE": "force",
             "SARV_ASKPASS_FILE": fileURL.path,
         ]
+    }
+
+    /// Environment and one cleanup directory for a target plus an optional
+    /// saved jump Host. The nested ProxyCommand marks itself as `jump`, so the
+    /// two ssh processes never consume each other's password.
+    static func environment(targetPassword: String, jumpPassword: String?)
+        -> (environment: [String: String], cleanupPath: String?) {
+        guard let helper = helperPath,
+              !targetPassword.isEmpty || !(jumpPassword ?? "").isEmpty else {
+            return ([:], nil)
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarv-ssh-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var environment: [String: String] = [
+                "SSH_ASKPASS": helper,
+                "SSH_ASKPASS_REQUIRE": "force",
+                "SARV_ASKPASS_ROLE": "target",
+            ]
+            if !targetPassword.isEmpty {
+                let targetURL = directory.appendingPathComponent("target")
+                try (targetPassword + "\n").write(to: targetURL, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetURL.path)
+                environment["SARV_ASKPASS_TARGET_FILE"] = targetURL.path
+            }
+            if let jumpPassword, !jumpPassword.isEmpty {
+                let jumpURL = directory.appendingPathComponent("jump")
+                try (jumpPassword + "\n").write(to: jumpURL, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: jumpURL.path)
+                environment["SARV_ASKPASS_JUMP_FILE"] = jumpURL.path
+            }
+            return (environment, directory.path)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            return ([:], nil)
+        }
     }
 }

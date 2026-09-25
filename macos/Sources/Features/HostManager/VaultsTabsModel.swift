@@ -796,8 +796,14 @@ final class VaultsTabsModel: ObservableObject {
     /// "Password" hosts always carry a (mandatory) saved password, so they
     /// connect silently and, on failure, show the error card to fix via Edit
     /// host — they never show an inline prompt. Key/agent auth needs no password.
-    private func sshNeedsPassword(_ host: SavedHost?) -> Bool {
+    private func selectedJumpHost(for host: SavedHost?) -> SavedHost? {
+        guard let id = host?.proxyJumpHostID else { return nil }
+        return SavedHostsStore.shared.host(withID: id)
+    }
+
+    private func sshNeedsPassword(_ host: SavedHost?, jumpHost: SavedHost? = nil) -> Bool {
         host?.authMethod == .ask
+            || (jumpHost?.authMethod == .ask && jumpHost?.password.isEmpty != false)
     }
 
     /// A surface that runs `command` (ssh) directly. The password is fed via the
@@ -829,17 +835,20 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?,
+                                jumpPassword: String? = nil,
                                 termOverride: String = "", banner: [String] = [])
         -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
         var full = wrapSSHCommand(command, termOverride: termOverride)
         var passwordFile: String?
-        if let pw = password, !pw.isEmpty {
-            let env = SSHAskpass.env(forPassword: pw)
-            passwordFile = env["SARV_ASKPASS_FILE"]
+        let targetPassword = password ?? ""
+        if !targetPassword.isEmpty || !(jumpPassword ?? "").isEmpty {
+            let made = SSHAskpass.environment(targetPassword: targetPassword, jumpPassword: jumpPassword)
+            let env = made.environment
+            passwordFile = made.cleanupPath
             // Use the `env` command (not bare VAR=val) so the assignments
             // survive macOS's `bash -c "exec -l <command>"` wrapper, where
             // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
-            let prefix = env.map { "\($0.key)='\($0.value)'" }.joined(separator: " ")
+            let prefix = env.map { "\($0.key)=\(shellQuote($0.value))" }.joined(separator: " ")
             if !prefix.isEmpty { full = "env \(prefix) \(full)" }
         }
         // A reconnect prints its banner into the fresh terminal before ssh takes
@@ -867,7 +876,8 @@ final class VaultsTabsModel: ObservableObject {
 
     private func startSSHConnection(app: ghostty_app_t, command: String, name: String,
                                     host: SavedHost?, at index: Int? = nil) -> TerminalTab? {
-        let needsPassword = sshNeedsPassword(host)
+        let jumpHost = selectedJumpHost(for: host)
+        let needsPassword = sshNeedsPassword(host, jumpHost: jumpHost)
         // Always start over a blank placeholder surface; ssh is spawned only
         // after the pre-flight host-key check (and password step) resolve.
         let surface = Ghostty.SurfaceView(app)
@@ -877,7 +887,8 @@ final class VaultsTabsModel: ObservableObject {
         place(tab, at: index)
         HostManagerController.shared.show()
 
-        let model = SSHConnectionModel(title: host?.label ?? name, host: host, needsPassword: needsPassword)
+        let model = SSHConnectionModel(title: host?.label ?? name, host: host,
+                                       jumpHost: jumpHost, needsPassword: needsPassword)
         let controller = SSHConnectionController(model: model, surfaceView: surface, tabsModel: self)
         connections[surface.id] = ActiveConnection(model: model, controller: controller, command: command)
 
@@ -913,7 +924,8 @@ final class VaultsTabsModel: ObservableObject {
         if model.requiresPassword {
             model.stage = .needsPassword     // popup collects it; submit → launchSSHConnection
         } else {
-            launchSSHConnection(for: model, password: model.host?.password ?? "")
+            launchSSHConnection(for: model, password: model.passwordField,
+                                jumpPassword: model.jumpPasswordField)
         }
     }
 
@@ -921,7 +933,8 @@ final class VaultsTabsModel: ObservableObject {
     /// with the askpass env, replaces JUST this connection's pane in its tab's
     /// split tree (so splits survive), restarts the controller, and re-keys the
     /// connection to the new surface. Backs password submit and Reconnect.
-    func launchSSHConnection(for model: SSHConnectionModel, password: String) {
+    func launchSSHConnection(for model: SSHConnectionModel, password: String,
+                             jumpPassword: String? = nil) {
         guard let oldID = surfaceID(for: model),
               let conn = connections[oldID],
               let oldSurface = surface(withID: oldID),
@@ -932,7 +945,11 @@ final class VaultsTabsModel: ObservableObject {
         // Rebuild the command from the LATEST saved host (the user may have just
         // edited it), so changed port/options take effect on reconnect.
         let latestHost = model.host.flatMap { SavedHostsStore.shared.host(withID: $0.id) } ?? model.host
-        let command = latestHost.map { $0.sshCommand(staged: true) } ?? conn.command
+        let latestJump = selectedJumpHost(for: latestHost)
+        let command = latestHost.map { $0.sshCommand(staged: true, jumpHost: latestJump) } ?? conn.command
+        let effectiveJumpPassword = jumpPassword?.isEmpty == false
+            ? jumpPassword
+            : latestJump?.password
         // Recovering a session the user LOST (rather than a first connect or a
         // retry after a rejected password): the pane's terminal is replaced
         // wholesale, taking the old scrollback -- and ssh's own "Connection to
@@ -945,6 +962,7 @@ final class VaultsTabsModel: ObservableObject {
                                      attempt: model.reconnectAttempts)
         } ?? []
         let made = makeSSHSurface(app: app, command: command, password: password,
+                                  jumpPassword: effectiveJumpPassword,
                                   termOverride: latestHost?.termOverride ?? "",
                                   banner: banner)
         applyHostTheme(model.host, to: made.surface)
@@ -1017,6 +1035,9 @@ final class VaultsTabsModel: ObservableObject {
         // this is what makes Start over work after fixing a wrong saved password.
         if let host = model.host, let latest = SavedHostsStore.shared.host(withID: host.id) {
             model.passwordField = latest.password
+            if let jump = selectedJumpHost(for: latest), jump.authMethod != .ask {
+                model.jumpPasswordField = jump.password
+            }
         }
         // Only "Ask" hosts re-prompt for a password; "Password" hosts relaunch
         // with the (corrected) saved password — no inline prompt.
@@ -1025,8 +1046,51 @@ final class VaultsTabsModel: ObservableObject {
             model.silent = false
             model.stage = .needsPassword
         } else {
-            launchSSHConnection(for: model, password: model.passwordField)
+            launchSSHConnection(for: model, password: model.passwordField,
+                                jumpPassword: model.jumpPasswordField)
         }
+    }
+
+    /// Reconnect the SSH session in the currently focused pane. This is the
+    /// action behind ⌘R; local terminal panes and connection prompts are left
+    /// alone so the shortcut does not interfere with normal terminal input.
+    @discardableResult
+    func reconnectFocusedSSH() -> Bool {
+        guard let tab = activeTerminal,
+              let surface = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf(),
+              let connection = connections[surface.id] else { return false }
+
+        switch connection.model.stage {
+        case .connected:
+            reconnect(for: connection.model)
+        case .failed, .disconnected:
+            if connection.model.autoReconnecting {
+                connection.controller.retryNow()
+            } else {
+                reconnect(for: connection.model)
+            }
+        case .needsPassword, .needsHostKey, .connecting:
+            return false
+        }
+        return true
+    }
+
+    /// Fill the saved/in-memory password for the SSH session in the currently
+    /// focused pane, then submit it as a real Enter key event. This intentionally
+    /// does not use the clipboard, and never targets a jump host's password.
+    @discardableResult
+    @MainActor
+    func fillPasswordInFocusedSSH() -> Bool {
+        guard let tab = activeTerminal,
+              let surface = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf(),
+              let connection = connections[surface.id],
+              case .connected = connection.model.stage,
+              !connection.model.passwordField.isEmpty,
+              let surfaceModel = surface.surfaceModel else { return false }
+
+        surfaceModel.sendText(connection.model.passwordField)
+        surfaceModel.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press))
+        return true
     }
 
     /// The session authenticated: hide the popup (show the live terminal) and
@@ -1129,9 +1193,11 @@ final class VaultsTabsModel: ObservableObject {
         guard let tab = tab(containing: surface),
               let node = tab.surfaceTree.root?.node(view: surface),
               let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
-        let command = host.sshCommand(staged: true)
-        let needsPassword = sshNeedsPassword(host)
+        let jumpHost = selectedJumpHost(for: host)
+        let command = host.sshCommand(staged: true, jumpHost: jumpHost)
+        let needsPassword = sshNeedsPassword(host, jumpHost: jumpHost)
         let knownPassword = host.password.isEmpty ? nil : host.password
+        let knownJumpPassword = jumpHost?.password.isEmpty == false ? jumpHost?.password : nil
 
         awaitingChoice.remove(surface.id)
 
@@ -1142,7 +1208,9 @@ final class VaultsTabsModel: ObservableObject {
             boundSurface = surface
         } else {
             // Swap the placeholder pane for a live ssh surface.
-            let made = makeSSHSurface(app: app, command: command, password: knownPassword, termOverride: host.termOverride)
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword,
+                                      jumpPassword: knownJumpPassword,
+                                      termOverride: host.termOverride)
             boundSurface = made.surface
             passwordFile = made.passwordFile
             applyHostTheme(host, to: made.surface)
@@ -1151,7 +1219,8 @@ final class VaultsTabsModel: ObservableObject {
             }
         }
 
-        let model = SSHConnectionModel(title: host.displayLabel, host: host, needsPassword: needsPassword)
+        let model = SSHConnectionModel(title: host.displayLabel, host: host,
+                                       jumpHost: jumpHost, needsPassword: needsPassword)
         if !needsPassword { model.passwordFilePath = passwordFile }
         let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
         connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)

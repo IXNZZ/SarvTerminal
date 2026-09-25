@@ -70,7 +70,7 @@ extension Ghostty {
                 self,
                 selector: #selector(ghosttyDidChangeReadonly(_:)),
                 name: .ghosttyDidChangeReadonly,
-                object: self,
+                object: self
             )
         }
 

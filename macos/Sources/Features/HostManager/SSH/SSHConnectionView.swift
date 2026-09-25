@@ -249,16 +249,23 @@ struct SSHConnectionView: View {
 
     private var passwordSection: some View {
         VStack(spacing: 10) {
-            SecureField("Password", text: $model.passwordField)
-                .textFieldStyle(.roundedBorder)
-                .focused($passwordFocused)
-                .onSubmit { controller.submitPassword() }
+            if model.host?.authMethod == .ask {
+                SecureField("Target password", text: $model.passwordField)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($passwordFocused)
+                    .onSubmit { controller.submitPassword() }
+            }
+            if model.jumpHost?.authMethod == .ask {
+                SecureField("Jump host password", text: $model.jumpPasswordField)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { controller.submitPassword() }
+            }
             if model.passwordAttempts > 0 {
                 let remaining = model.maxPasswordAttempts - model.passwordAttempts
                 Text("Incorrect password — \(remaining) attempt\(remaining == 1 ? "" : "s") left")
                     .font(.caption).foregroundStyle(.red)
             }
-            Text("This host is set to “Ask”, so you'll enter the password each time. To save it, edit the host and choose “Password”.")
+            Text("Passwords are used only for this connection. To save one for a Host, edit it and choose “Password”.")
                 .font(.caption2).foregroundStyle(.tertiaryText)
                 .multilineTextAlignment(.center)
         }
@@ -354,7 +361,7 @@ struct SSHConnectionView: View {
                 Button("Connect") { controller.submitPassword() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.passwordField.isEmpty)
+                    .disabled(!passwordInputValid)
             }
         case .connecting:
             HStack {
@@ -444,5 +451,11 @@ struct SSHConnectionView: View {
     private func focusPasswordIfNeeded() {
         guard case .needsPassword = model.stage else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { passwordFocused = true }
+    }
+
+    private var passwordInputValid: Bool {
+        let targetOK = model.host?.authMethod != .ask || !model.passwordField.isEmpty
+        let jumpOK = model.jumpHost?.authMethod != .ask || !model.jumpPasswordField.isEmpty
+        return targetOK && jumpOK
     }
 }

@@ -509,13 +509,21 @@ struct HostEditorView: View {
                                  focus: $focusedField, field: .keepAlive)
                         .id(HostEditorFocusField.keepAlive)
                         .help("Ping the server every N seconds so idle sessions don't drop — empty turns it off")
-                    EditorTextRow(icon: "arrow.triangle.branch",
-                                  placeholder: "Proxy jump host, e.g. user@bastion",
-                                  text: $draft.proxyJump,
-                                  onEditingEnded: { autosaveIf(!draft.proxyJump.isEmpty) },
-                                  focus: $focusedField, field: .proxyJump)
-                        .id(HostEditorFocusField.proxyJump)
-                        .help("Reach this host through an intermediate jump host (-J)")
+                    EditorPickerRow(
+                        icon: "arrow.triangle.branch",
+                        title: "Jump host",
+                        selection: $draft.proxyJumpHostID,
+                        options: jumpHostOptions,
+                        focus: $focusedField, field: .proxyJump
+                    )
+                    .id(HostEditorFocusField.proxyJump)
+                    .onChange(of: draft.proxyJumpHostID) { _ in
+                        // Selecting None also clears the legacy free-form value.
+                        // The picker change is persisted by the editor's single
+                        // discrete-control autosave watcher.
+                        draft.proxyJump = ""
+                    }
+                    .help("Choose another saved Host as the password-authenticated jump server")
                     EditorBoolRow(icon: "arrow.down.right.and.arrow.up.left",
                                   title: "Compression (-C)",
                                   isOn: $draft.useCompression,
@@ -717,6 +725,7 @@ struct HostEditorView: View {
         if draft.strictHostKeyChecking != .ask
             || draft.connectTimeoutSeconds != 0
             || draft.serverAliveIntervalSeconds != 0
+            || draft.proxyJumpHostID != nil
             || !draft.proxyJump.isEmpty
             || draft.useCompression
             || draft.requestTTY
@@ -750,6 +759,18 @@ struct HostEditorView: View {
             }
         }
         return ordered.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// The jump picker is intentionally limited to other saved Hosts. Keeping
+    /// the old free-form value as the None label makes imported legacy entries
+    /// visible until the user replaces them with a saved Host.
+    private var jumpHostOptions: [(value: UUID?, label: String)] {
+        let noneLabel = draft.proxyJump.isEmpty ? "None" : "Legacy: \(draft.proxyJump)"
+        let saved = store.hosts
+            .filter { $0.id != draft.id && $0.canConnect }
+            .sorted { $0.displayLabel.localizedCaseInsensitiveCompare($1.displayLabel) == .orderedAscending }
+            .map { (value: Optional($0.id), label: "\($0.displayLabel)  ·  \($0.subtitle)") }
+        return [(value: nil, label: noneLabel)] + saved
     }
 
     private func countSummary(_ list: [String]) -> String {
@@ -799,6 +820,7 @@ private extension SavedHost {
         copy.note = ""
         copy.identityFile = ""
         copy.proxyJump = ""
+        copy.proxyJumpHostID = nil
         copy.remotePath = ""
         copy.initialCommand = ""
         copy.localForwards = []

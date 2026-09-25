@@ -51,7 +51,7 @@ enum VaultCrypto {
             using: SHA256.self,
             salt: wrapSalt,
             sharedInfo: ephPubData + pubData,
-            outputByteCount: 32,
+            outputByteCount: 32
         )
         let dekData = dek.withUnsafeBytes { Data($0) }
         guard let combined = try AES.GCM.seal(dekData, using: symKey).combined else {
@@ -72,7 +72,7 @@ enum VaultCrypto {
             using: SHA256.self,
             salt: wrapSalt,
             sharedInfo: Data(ephPubData) + priv.publicKey.rawRepresentation,
-            outputByteCount: 32,
+            outputByteCount: 32
         )
         let box = try AES.GCM.SealedBox(combined: sealed)
         return SymmetricKey(data: try AES.GCM.open(box, using: symKey))

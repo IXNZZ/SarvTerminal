@@ -37,6 +37,20 @@ struct PaletteRow: Identifiable, Equatable {
     static func == (lhs: PaletteRow, rhs: PaletteRow) -> Bool { lhs.id == rhs.id }
 }
 
+/// A saved or discovered Host after fuzzy ranking, before it is converted to
+/// a palette row. Keeping the score here lets saved and ssh_config Hosts share
+/// one relevance-ordered list.
+private struct RankedPaletteHost {
+    let id: String
+    let action: PaletteAction
+    let title: String
+    let subtitle: String?
+    let trailingText: String
+    let score: Int
+    let isSaved: Bool
+    let dedupeKey: String
+}
+
 /// Observable state for the palette so the controller can drive
 /// navigation from its NSEvent monitor without leaking monitors
 /// through SwiftUI view lifetime.
@@ -64,18 +78,61 @@ final class HostSearchModel: ObservableObject {
         highlightIndex = 0
     }
 
-    /// Saved hosts matching the current query.
-    private var filteredSavedHosts: [SavedHost] {
-        SearchMatcher.filter(savedHosts, query: search) {
-            [$0.displayLabel, $0.hostname, $0.username]
+    /// Saved Hosts ranked by fuzzy relevance. The label/alias is deliberately
+    /// the strongest field, followed by hostname and username.
+    private var rankedSavedHosts: [RankedPaletteHost] {
+        savedHosts.compactMap { host in
+            guard let score = SearchMatcher.rank(search, in: [
+                (host.displayLabel, 100),
+                (host.hostname, 80),
+                (host.username, 60),
+                (host.tags.joined(separator: " "), 40),
+                (host.note, 20),
+            ]) else { return nil }
+            return RankedPaletteHost(
+                id: "saved-\(host.id)",
+                action: .savedHost(host),
+                title: host.displayLabel,
+                subtitle: host.subtitle.isEmpty ? nil : host.subtitle,
+                trailingText: "saved",
+                score: score,
+                isSaved: true,
+                dedupeKey: hostDedupeKey(hostname: host.hostname,
+                                         username: host.username,
+                                         port: host.port,
+                                         label: host.displayLabel))
         }
+        .sorted(by: rankBefore)
     }
 
-    /// Discovered (~/.ssh/config) hosts matching the current query.
-    private var filteredHosts: [DiscoveredHost] {
-        SearchMatcher.filter(hosts, query: search) {
-            [$0.label, $0.hostname ?? "", $0.user ?? ""]
+    /// Discovered (`~/.ssh/config`) Hosts ranked by the same fuzzy matcher.
+    private var rankedDiscoveredHosts: [RankedPaletteHost] {
+        let savedKeys = Set(rankedSavedHosts.map { $0.dedupeKey })
+        let savedLabels = Set(rankedSavedHosts.map { $0.title.lowercased() })
+        return hosts.compactMap { host in
+            guard let score = SearchMatcher.rank(search, in: [
+                (host.label, 100),
+                (host.hostname ?? "", 80),
+                (host.user ?? "", 60),
+            ]) else { return nil }
+            let key = hostDedupeKey(hostname: host.hostname ?? host.label,
+                                    username: host.user ?? "",
+                                    port: host.port ?? 22,
+                                    label: host.label)
+            guard !savedKeys.contains(key), !savedLabels.contains(host.label.lowercased()) else {
+                return nil
+            }
+            return RankedPaletteHost(
+                id: "host-\(host.id)",
+                action: .host(host),
+                title: host.label,
+                subtitle: host.subtitle.isEmpty ? nil : host.subtitle,
+                trailingText: "ssh_config",
+                score: score,
+                isSaved: false,
+                dedupeKey: key)
         }
+        .sorted(by: rankBefore)
     }
 
     /// The full, ordered list of rows the palette renders. Quick-connect
@@ -84,6 +141,20 @@ final class HostSearchModel: ObservableObject {
     var rows: [PaletteRow] {
         var result: [PaletteRow] = []
         let q = search.trimmingCharacters(in: .whitespaces)
+
+        // Hosts always come first. This makes Return useful for a server
+        // search instead of selecting an unrelated Quick connect action.
+        for host in (rankedSavedHosts + rankedDiscoveredHosts).sorted(by: rankBefore) {
+            result.append(PaletteRow(
+                id: host.id,
+                action: host.action,
+                title: host.title,
+                subtitle: host.subtitle,
+                systemImage: "server.rack",
+                trailingText: host.trailingText,
+                section: .hosts
+            ))
+        }
 
         if !q.isEmpty {
             result.append(PaletteRow(
@@ -130,34 +201,18 @@ final class HostSearchModel: ObservableObject {
             ))
         }
 
-        // The user's own saved hosts first — they're the curated Vaults list.
-        for host in filteredSavedHosts {
-            result.append(PaletteRow(
-                id: "saved-\(host.id)",
-                action: .savedHost(host),
-                title: host.displayLabel,
-                subtitle: host.subtitle.isEmpty ? nil : host.subtitle,
-                systemImage: "server.rack",
-                trailingText: "saved",
-                section: .hosts
-            ))
-        }
-
-        // Then anything discovered in ~/.ssh/config (skipping labels already
-        // covered by a saved host so we don't list the same name twice).
-        let savedLabels = Set(filteredSavedHosts.map { $0.displayLabel.lowercased() })
-        for host in filteredHosts where !savedLabels.contains(host.label.lowercased()) {
-            result.append(PaletteRow(
-                id: "host-\(host.id)",
-                action: .host(host),
-                title: host.label,
-                subtitle: host.subtitle.isEmpty ? nil : host.subtitle,
-                systemImage: "server.rack",
-                trailingText: "ssh_config",
-                section: .hosts
-            ))
-        }
         return result
+    }
+
+    private func rankBefore(_ lhs: RankedPaletteHost, _ rhs: RankedPaletteHost) -> Bool {
+        if lhs.score != rhs.score { return lhs.score > rhs.score }
+        if lhs.isSaved != rhs.isSaved { return lhs.isSaved }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func hostDedupeKey(hostname: String, username: String, port: Int, label: String) -> String {
+        let endpoint = "\(username.lowercased())@\(hostname.lowercased()):\(port)"
+        return endpoint == "@:22" ? "label:\(label.lowercased())" : endpoint
     }
 
     func stepHighlight(_ delta: Int) {

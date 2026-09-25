@@ -16,10 +16,15 @@ final class SSHConnectionModel: ObservableObject {
     let title: String
     /// The originating saved host, if any.
     let host: SavedHost?
+    /// The saved Host selected as the target's jump server, if any.
+    let jumpHost: SavedHost?
 
     @Published var stage: SSHConnectionStage
     /// Password typed into the popup (prefilled from the saved host).
     @Published var passwordField: String
+    /// Password for an "Ask" jump Host. Saved-password jump Hosts never need
+    /// this field; their password is read from the selected Host.
+    @Published var jumpPasswordField: String
     @Published var passwordAttempts: Int = 0
     /// Max wrong-password tries before we give up and show the failure card.
     let maxPasswordAttempts = 3
@@ -74,11 +79,13 @@ final class SSHConnectionModel: ObservableObject {
     /// Plain text of the log for the "Copy logs" button.
     var logCopyText: String { logEntries.map(\.text).joined(separator: "\n") }
 
-    init(title: String, host: SavedHost?, needsPassword: Bool) {
+    init(title: String, host: SavedHost?, jumpHost: SavedHost?, needsPassword: Bool) {
         self.title = title
         self.host = host
+        self.jumpHost = jumpHost
         self.requiresPassword = needsPassword
         self.passwordField = host?.password ?? ""
+        self.jumpPasswordField = jumpHost?.authMethod == .ask ? "" : (jumpHost?.password ?? "")
         self.silent = !needsPassword
         // The pre-flight host-key check sets the real first stage; start neutral.
         self.stage = .connecting

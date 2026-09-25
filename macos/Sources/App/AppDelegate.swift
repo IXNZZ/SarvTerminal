@@ -683,6 +683,19 @@ class AppDelegate: NSObject,
             switch action {
             case .commandPalette:
                 HostSearchController.shared.show()
+            case .reconnectSSH:
+                guard VaultsTabsModel.shared.activeTerminal != nil,
+                      !(NSApp.keyWindow?.firstResponder is NSTextField),
+                      !(NSApp.keyWindow?.firstResponder is NSTextView),
+                      VaultsTabsModel.shared.reconnectFocusedSSH() else { return event }
+                return nil
+            case .fillSSHPassword:
+                guard VaultsTabsModel.shared.activeTerminal != nil,
+                      !(NSApp.keyWindow?.firstResponder is NSTextField),
+                      !(NSApp.keyWindow?.firstResponder is NSTextView) else { return event }
+                let filled = MainActor.assumeIsolated({ VaultsTabsModel.shared.fillPasswordInFocusedSSH() })
+                guard filled else { return event }
+                return nil
             case .newLocalTerminal:
                 VaultsTabsModel.shared.newTerminal(
                     workingDirectory: VaultsTabsModel.newTabWorkingDirectory)
@@ -726,12 +739,12 @@ class AppDelegate: NSObject,
             let model = VaultsTabsModel.shared
             let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
             switch (mods, event.keyCode) {
-            case ([.command, .shift], 30): model.cycleTab(1); return nil            // ⌘⇧]  next_tab
-            case ([.command, .shift], 33): model.cycleTab(-1); return nil           // ⌘⇧[  previous_tab
+            case ([.command], 30):         model.cycleTab(1); return nil            // ⌘]   next_tab
+            case ([.command], 33):         model.cycleTab(-1); return nil           // ⌘[   previous_tab
             case ([.control], 48):         model.cycleTab(1); return nil            // ⌃Tab  next_tab
             case ([.control, .shift], 48): model.cycleTab(-1); return nil           // ⌃⇧Tab previous_tab
-            case ([.command], 30):         model.focusSplit(.next); return nil      // ⌘]   goto_split next
-            case ([.command], 33):         model.focusSplit(.previous); return nil  // ⌘[   goto_split previous
+            case ([.command, .shift], 30): model.focusSplit(.next); return nil      // ⌘⇧]  goto_split next
+            case ([.command, .shift], 33): model.focusSplit(.previous); return nil  // ⌘⇧[  goto_split previous
             case ([.command, .option], 123): model.focusSplit(.left); return nil    // ⌘⌥←
             case ([.command, .option], 124): model.focusSplit(.right); return nil   // ⌘⌥→
             case ([.command, .option], 125): model.focusSplit(.down); return nil    // ⌘⌥↓
@@ -1652,7 +1665,7 @@ extension AppDelegate {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
                     messageText: "Quit Sarv Terminal?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    confirmButtonTitle: "Terminate"
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {
@@ -1695,7 +1708,7 @@ extension AppDelegate {
                 let response = await controller.confirmCloseAsync(
                     messageText: "Quit Sarv Terminal?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    confirmButtonTitle: "Terminate"
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {

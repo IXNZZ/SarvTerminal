@@ -209,7 +209,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) {
         viewModel.state = .installing(.init(
             appcastItem: nil,
-            retryTerminatingApplication: retryTerminatingApplication,
+            retryTerminatingApplication: retryTerminatingApplication
         ))
 
         if !hasUnobtrusiveTarget {

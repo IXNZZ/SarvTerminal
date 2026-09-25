@@ -202,7 +202,7 @@ extension Ghostty {
                 // top Z-index os it isn't faded by the unfocused overlay.
                 SurfaceGrabHandle(
                     surfaceView: surfaceView,
-                    dragHandle: ghostty.config.dragHandle,
+                    dragHandle: ghostty.config.dragHandle
                 )
             }
             // Track viewport scroll position (the core pushes this on every change)
@@ -419,7 +419,57 @@ extension Ghostty {
         var body: some View {
             GeometryReader { geo in
                 VStack(alignment: .leading, spacing: 6) {
-                  HStack(spacing: 4) {
+                    searchControls
+
+                  if showAdvanced { advancedRow }
+                }
+                .padding(8)
+                .background(.background)
+                .clipShape(clipShape)
+                .shadow(radius: 4)
+                .onAppear {
+                    isSearchFieldFocused = true
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .ghosttySearchFocus)) { notification in
+                    guard notification.object as? SurfaceView === surfaceView else { return }
+                    DispatchQueue.main.async {
+                        isSearchFieldFocused = true
+                    }
+                }
+                .background(
+                    GeometryReader { barGeo in
+                        Color.clear.onAppear {
+                            barSize = barGeo.size
+                        }
+                    }
+                )
+                .padding(padding)
+                .offset(dragOffset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            dragOffset = value.translation
+                        }
+                        .onEnded { value in
+                            let centerPos = centerPosition(for: corner, in: geo.size, barSize: barSize)
+                            let newCenter = CGPoint(
+                                x: centerPos.x + value.translation.width,
+                                y: centerPos.y + value.translation.height
+                            )
+                            let newCorner = closestCorner(to: newCenter, in: geo.size)
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                corner = newCorner
+                                dragOffset = .zero
+                            }
+                        }
+                )
+            }
+        }
+
+
+        private var searchControls: some View {
+            HStack(spacing: 4) {
                     BackportSelectionTextField(
                         "Search",
                         text: $searchState.needle.text,
@@ -435,7 +485,8 @@ extension Ghostty {
                     .focused($isSearchFieldFocused)
                     .overlay(alignment: .trailing) {
                         if let selected = searchState.selected {
-                            Text("\(selected + 1)/\(searchState.total, default: "?")")
+                            let total = searchState.total.map { String($0) } ?? "?"
+                            Text("\(selected + 1)/\(total)")
                                 .font(.caption)
                                 .foregroundColor(.secondaryText)
                                 .monospacedDigit()
@@ -517,52 +568,7 @@ extension Ghostty {
                     .hoverTip("Close search (Esc)")
                   }
 
-                  if showAdvanced { advancedRow }
-                }
-                .padding(8)
-                .background(.background)
-                .clipShape(clipShape)
-                .shadow(radius: 4)
-                .onAppear {
-                    isSearchFieldFocused = true
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .ghosttySearchFocus)) { notification in
-                    guard notification.object as? SurfaceView === surfaceView else { return }
-                    DispatchQueue.main.async {
-                        isSearchFieldFocused = true
-                    }
-                }
-                .background(
-                    GeometryReader { barGeo in
-                        Color.clear.onAppear {
-                            barSize = barGeo.size
-                        }
-                    }
-                )
-                .padding(padding)
-                .offset(dragOffset)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            dragOffset = value.translation
-                        }
-                        .onEnded { value in
-                            let centerPos = centerPosition(for: corner, in: geo.size, barSize: barSize)
-                            let newCenter = CGPoint(
-                                x: centerPos.x + value.translation.width,
-                                y: centerPos.y + value.translation.height
-                            )
-                            let newCorner = closestCorner(to: newCenter, in: geo.size)
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                corner = newCorner
-                                dragOffset = .zero
-                            }
-                        }
-                )
-            }
         }
-
         /// Advanced options revealed by the slider button: a grep-style filter
         /// that shows only matching lines, with before/after context counts.
         private var advancedRow: some View {
@@ -615,11 +621,12 @@ extension Ghostty {
         }
 
         private var clipShape: some Shape {
+#if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 return ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
-            } else {
-                return RoundedRectangle(cornerRadius: 8)
             }
+#endif // compiler(>=6.2)
+            return RoundedRectangle(cornerRadius: 8)
         }
 
         enum Corner {

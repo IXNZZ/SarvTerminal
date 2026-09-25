@@ -193,6 +193,10 @@ let kKeybindActions: [KeybindAction] = [
     .init(name: "next_tab", label: "Next tab", category: "Tabs"),
     .init(name: "last_tab", label: "Last tab", category: "Tabs"),
 
+    // SSH — SarvTerminal app-level shortcuts, rebindable via AppKeybindStore.
+    .init(name: "app:reconnect_ssh", label: "Reconnect SSH", category: "SSH"),
+    .init(name: "app:fill_ssh_password", label: "Fill SSH password", category: "SSH"),
+
     // Windows
     .init(name: "new_window", label: "New window", category: "Windows"),
     .init(name: "close_window", label: "Close window", category: "Windows"),
@@ -224,7 +228,7 @@ let kKeybindActions: [KeybindAction] = [
     // app. Ghostty's `toggle_command_palette` (⌘⇧P) and `toggle_quick_terminal`
     // are intentionally omitted — they're rendered by Ghostty's classic
     // window controller, which Vaults doesn't use, so they'd be dead rows.
-    // Our own command palette is `app:command_palette` (⌘T / ⌘P) above.
+    // Our own command palette is `app:command_palette` (⌘T) above.
     .init(name: "inspector:toggle", label: "Toggle inspector", category: "UI"),
 
     // System
@@ -247,11 +251,11 @@ struct LockedShortcut {
 }
 
 let kLockedShortcuts: [LockedShortcut] = [
-    .init(actionName: "next_tab",            combos: ["cmd+shift+]", "ctrl+tab"]),
-    .init(actionName: "previous_tab",        combos: ["cmd+shift+[", "ctrl+shift+tab"]),
+    .init(actionName: "next_tab",            combos: ["cmd+]", "ctrl+tab"]),
+    .init(actionName: "previous_tab",        combos: ["cmd+[", "ctrl+shift+tab"]),
     .init(actionName: "last_tab",            combos: ["cmd+9"]),
-    .init(actionName: "goto_split:next",     combos: ["cmd+]"]),
-    .init(actionName: "goto_split:previous", combos: ["cmd+["]),
+    .init(actionName: "goto_split:next",     combos: ["cmd+shift+]"]),
+    .init(actionName: "goto_split:previous", combos: ["cmd+shift+["]),
     .init(actionName: "toggle_split_zoom",   combos: ["cmd+shift+enter"]),
     .init(actionName: "toggle_fullscreen",   combos: ["cmd+enter"]),
 ]
@@ -262,12 +266,12 @@ let kLockedShortcuts: [LockedShortcut] = [
 /// to a different action (which would leave the fixed one un-restorable except
 /// via "Reset to defaults"). Keep in sync with `AppDelegate.localEventKeyDown`.
 let kReservedCombos: [(label: String, combos: [String])] = [
-    ("Next tab",          ["cmd+shift+]", "ctrl+tab"]),
-    ("Previous tab",      ["cmd+shift+[", "ctrl+shift+tab"]),
+    ("Next tab",          ["cmd+]", "ctrl+tab"]),
+    ("Previous tab",      ["cmd+[", "ctrl+shift+tab"]),
     ("Last tab",          ["cmd+9"]),
     ("Select tab",        (1...8).map { "cmd+\($0)" }),
-    ("Next split",        ["cmd+]"]),
-    ("Previous split",    ["cmd+["]),
+    ("Next split",        ["cmd+shift+]"]),
+    ("Previous split",    ["cmd+shift+["]),
     ("Focus split",       ["cmd+opt+arrow_left", "cmd+opt+arrow_right", "cmd+opt+arrow_up", "cmd+opt+arrow_down"]),
     ("Resize split",      ["cmd+ctrl+arrow_left", "cmd+ctrl+arrow_right", "cmd+ctrl+arrow_up", "cmd+ctrl+arrow_down"]),
     ("Toggle split zoom", ["cmd+shift+enter"]),
