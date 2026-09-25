@@ -377,7 +377,7 @@ Stock Ghostty has no concept of a saved connection — you type `ssh …` yourse
 - **SavedHost** — the connection record: identity, auth, ssh options, port-forwards, startup command, organization (group + tags), appearance (theme, OS platform icon), timestamps.
 - **HostGroup** — a nestable folder (self-referential `parentID` tree) with a name, SF-Symbol icon, and color.
 - Two JSON stores (`hosts.json`, `groups.json`) plus a small `pinned-history.json`, all under the app config dir, hosts encrypted at rest.
-- The dashboard UI: grid/list views, breadcrumb drill-down, quick-connect/filter bar, tag filter, sort modes, and the slide-in host/group editors with **autosave** (no explicit Save button for hosts).
+- The dashboard UI: grid/list views, breadcrumb drill-down, quick-connect/filter bar, tag filter, sort modes, and the slide-in host/group editors with **autosave** plus an explicit host Save action.
 - OS auto-detection: a silent post-connect SSH probe of `/etc/os-release` that stamps a distro icon on the host.
 
 Source: everything under `macos/Sources/Features/HostManager/`.
@@ -2219,6 +2219,78 @@ reliable when a modal panel has no editable first responder.
   an Entry. Return must confirm, Escape must cancel, and text input must be
   preserved when submitted.
 
+## 45. Host grouping, Tabby migration, portable transfer & explicit save
+
+### Symptom
+
+The Hosts dashboard rendered all saved hosts as one flat collection, so groups
+were separated from the connections they contained. Migrating from Tabby also
+required an intermediate format and could not preserve review decisions or
+messy display names. Debug and release builds store their encrypted vaults
+under different build-specific keys, so copying `hosts.json` between them is
+not a valid migration path. Finally, the host editor's primary action saved
+and connected at once, even when the user only wanted to update the record.
+
+### Root cause & reasoning
+
+The dashboard model already had enough information to group hosts, but the view
+only sorted the current host list and then rendered the Groups section. Tabby's
+version-8 YAML is profile-oriented and includes non-SSH profiles, groups,
+blacklists and jump-host IDs; treating it as a flat SSH-only import would lose
+important review context. The local encrypted stores deliberately isolate Debug
+and release data, and their device/build keys must not be copied as portable
+JSON. The editor had field-level autosave, but no explicit commit action for
+the common "save without connecting" workflow.
+
+### Platform-agnostic logic
+
+- Build host display buckets from each host's direct group reference. Put
+  ungrouped or dangling references in an `Ungrouped` bucket, render Hosts before
+  Groups, and use a full group path when nested groups need disambiguation.
+- Parse all Tabby profiles into a review model with a visible type. SSH entries
+  are selected by default; serial and unknown types remain visible but are not
+  selected because the current target model is SSH-only. Names are editable
+  before commit, groups resolve from Tabby group IDs, and Tabby password-auth
+  entries become prompt-based auth when the YAML has no secret.
+- Resolve a Tabby `jumpHost` source ID only after selected profiles are saved,
+  turning it into a first-class saved-host relationship. Report unresolved
+  references instead of silently writing a stale endpoint string.
+- Export Hosts and Groups as a versioned `.sarvhosts` envelope. Serialize the
+  complete Codable records, derive an AES-256-GCM key from a transfer password
+  with PBKDF2 and a random salt, and import with merge or replace semantics.
+  Preserve IDs where possible and remap collisions while repairing group and
+  jump-host references.
+- Keep field autosave, but expose an explicit Save action that flushes the
+  focused field, validates the draft, closes the editor, and never starts a
+  connection. Save & Connect remains separate.
+
+### macOS → Linux/GTK equivalents
+
+| macOS | Linux / GTK |
+|---|---|
+| `HostsSectionView.hostBuckets` and the group stores | Build equivalent host buckets in the GTK model; render Hosts before Groups and show full nested group paths. |
+| `ImportHostsView` + `HostImporter.parseTabby` | A GTK file chooser and preview list showing every profile type, editable names, checkboxes, group mapping and unsupported-type notes. Keep parsing independent of GTK. |
+| `HostTransfer` + `SyncCrypto` PBKDF2/AES-GCM envelope | Reuse the portable format and cryptographic parameters. Use the Linux secret-storage ladder for local data, but never store the transfer password. |
+| `HostEditorView` `onSave` callback | A GTK Save button that commits the current draft and closes without launching SSH; keep autosave and Save & Connect separate. |
+
+### How to verify on Linux
+
+- Create hosts in multiple direct and nested groups, including a dangling group
+  reference; confirm Hosts render first, each bucket is labeled correctly, and
+  no host disappears into an unshown group.
+- Import a Tabby version-8 file containing SSH and serial profiles; confirm all
+  profiles appear in the preview, only SSH is selected by default, names can be
+  edited, groups are created, and password-auth entries prompt until a secret
+  is saved locally.
+- Export a vault, import it into an empty profile, and compare endpoints,
+  groups, passwords, tags, options and jump-host relationships. Try a wrong
+  transfer password and a damaged archive; neither may mutate the stores.
+- Test merge and replace imports, including duplicate endpoints and ID
+  collisions. Verify jump-host IDs are remapped to imported Host records.
+- Edit a host with a focused text field, press Save, and confirm the record is
+  persisted while no terminal or SSH process is launched. Save & Connect keeps
+  its existing behavior.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
@@ -2378,7 +2450,7 @@ Host connected-state status dot color/size: **not specified in source** in the r
 
 Files: `VaultsEditorSidebar.swift` (panel shell), `VaultsRootView.swift` (`VaultsHostEditorSidebar` wrapper), `HostEditorComponents.swift` (row/card components).
 
-**Panel shell** (`VaultsEditorSidebar`): full-height trailing panel, fixed `width: 400`, background `Color(NSColor.windowBackgroundColor)`, leading-edge `Divider()`. To its left, a full-bleed scrim `Color.black.opacity(0.35)` (tap-to-dismiss). Slides in from the trailing edge with `.move(edge: .trailing).combined(with: .opacity)`, `.easeInOut(duration: 0.18)`, `zIndex(2)`. Autosaves on blur/change; closing is the commit point. GTK equivalent: an `AdwFlap`/overlay split or a `GtkRevealer` sliding from the right with a dimmed `GtkOverlay` behind it.
+**Panel shell** (`VaultsEditorSidebar`): full-height trailing panel, fixed `width: 400`, background `Color(NSColor.windowBackgroundColor)`, leading-edge `Divider()`. To its left, a full-bleed scrim `Color.black.opacity(0.35)` (tap-to-dismiss). Slides in from the trailing edge with `.move(edge: .trailing).combined(with: .opacity)`, `.easeInOut(duration: 0.18)`, `zIndex(2)`. Autosaves on blur/change; explicit Save flushes the focused field and closes without connecting, while closing remains a commit point. GTK equivalent: an `AdwFlap`/overlay split or a `GtkRevealer` sliding from the right with a dimmed `GtkOverlay` behind it.
 
 **Grouped card** (`EditorCard`): background `RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.08))` + stroke `0.10` `lineWidth 0.5`. Optional title `.headline`, `.primary`, padding `.horizontal 14 / .top 14 / .bottom 10`. Fields `VStack(spacing: 8)`, padding `.horizontal 12 / .bottom 12`.
 
@@ -2394,7 +2466,7 @@ Files: `VaultsEditorSidebar.swift` (panel shell), `VaultsRootView.swift` (`Vault
 
 **Editor field icons** (from `EditorTextRow` usages, representative — meanings from field names): `number.square` (port). Others (hostname, label, group, tags, note, username, identity file, etc.) pass their symbol per call site in `HostEditorView.swift` (not enumerated here). GTK: map each to a symbolic icon or use `AdwEntryRow`/`AdwActionRow` which conventionally omit per-field icons.
 
-**Keyboard:** Tab/Shift+Tab custom focus chain (AppKit event monitor), ↑/↓ cycles focused pickers, Space/Return activates toggles/expanders. Autosave flashes "Saved" on blur/change (no explicit Save button).
+**Keyboard:** Tab/Shift+Tab custom focus chain (AppKit event monitor), ↑/↓ cycles focused pickers, Space/Return activates toggles/expanders. Autosave flashes "Saved" on blur/change; the explicit Save action is the default Return action when the editor is open.
 
 ---
 

@@ -15,6 +15,9 @@ struct HostEditorView: View {
     /// whether anything was actually written — the "Saved" flash only shows
     /// for real changes, not for focusing a field and leaving it untouched.
     var onAutosave: (() -> Bool)? = nil
+    /// Explicit save action. The editor still autosaves individual fields, but
+    /// this gives the user a clear way to finish editing without connecting.
+    var onSave: (() -> Void)? = nil
 
     @ObservedObject private var store = SavedHostsStore.shared
     @ObservedObject private var snippetsStore = SnippetsStore.shared
@@ -693,8 +696,22 @@ struct HostEditorView: View {
                 .transition(.opacity)
             }
             Spacer()
-            // No explicit Save — every field autosaves on blur/change, so the
-            // only actions left are Close and Save & Connect.
+            if let onSave {
+                Button {
+                    guard requireValidDraft() else { return }
+                    onSave()
+                } label: {
+                    Text("Save")
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.secondary.opacity(0.18))
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!draft.canConnect)
+                .keyboardShortcut(.defaultAction)
+            }
             Button("Close", action: onCancel)
                 .keyboardShortcut(.cancelAction)
         }

@@ -6,11 +6,11 @@ import AppKit
 /// Layout is Termius-style:
 /// - Sticky header: quick-connect + actions + view/tag/sort
 /// - Breadcrumb (only visible when drilled into a group)
+/// - **Hosts** section: hosts grouped by their direct Group
 /// - **Groups** section: sub-groups at the current level
-/// - **Hosts** section: hosts in the current scope (root = all; group = recursive)
 ///
-/// Grid view is the default. List view renders the same two sections as
-/// full-width rows.
+/// Grid view is the default. List view renders the same sections as full-width
+/// rows.
 struct HostsSectionView: View {
     @ObservedObject private var hostsStore  = SavedHostsStore.shared
     @ObservedObject private var groupsStore = HostGroupsStore.shared
@@ -48,6 +48,8 @@ struct HostsSectionView: View {
     @State private var sortMode: HostsSortMode = .azAscending
     @State private var tagFilter: String? = nil
     @State private var showImporter = false
+    @State private var showTransfer = false
+    @State private var transferOperation: HostTransferView.Operation = .import
     @State private var contentWidth: CGFloat = 0
 
     // MARK: - View mode persistence
@@ -134,6 +136,14 @@ struct HostsSectionView: View {
         }
     }
 
+    /// A display bucket for Hosts. Hosts with a missing/deleted group reference
+    /// are folded into the ungrouped bucket so no saved Host disappears.
+    private struct HostBucket: Identifiable {
+        let id: String
+        let title: String
+        let hosts: [SavedHost]
+    }
+
     var body: some View {
         listMode
         // Editors slide in as a trailing side panel over the dashboard (same
@@ -154,7 +164,8 @@ struct HostsSectionView: View {
                             ? { discardNewHostDraft() }
                             : { confirmDeleteHost(hostDraft!, fromEditor: true) },
                         onConnect: { connectHostDraft() },
-                        onAutosave: { autosaveDraftNow() }
+                        onAutosave: { autosaveDraftNow() },
+                        onSave: { saveHostDraft() }
                     )
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -180,6 +191,9 @@ struct HostsSectionView: View {
         .onAppear { openPendingEditHostIfNeeded() }
         .onChange(of: hostSelection.pendingEditHostID) { _ in openPendingEditHostIfNeeded() }
         .sheet(isPresented: $showImporter) { ImportHostsView(targetGroupID: focusedGroupID) }
+        .sheet(isPresented: $showTransfer) {
+            HostTransferView(operation: transferOperation)
+        }
     }
 
     private func openPendingEditHostIfNeeded() {
@@ -208,8 +222,8 @@ struct HostsSectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if focusedGroupID != nil { breadcrumb }
-                groupsSection
                 hostsSection
+                groupsSection
                 if isFilteringAndEmpty { noMatchesState }
             }
             .padding(.horizontal, 16)
@@ -287,6 +301,10 @@ struct HostsSectionView: View {
             newHostSplitButton
             actionPill(label: "Import", systemImage: "square.and.arrow.down") {
                 showImporter = true
+            }
+            actionPill(label: "Transfer", systemImage: "arrow.left.arrow.right") {
+                transferOperation = .import
+                showTransfer = true
             }
             actionPill(label: "Terminal", systemImage: "terminal") {
                 VaultsTabsModel.shared.newTerminal(command: nil, name: "Terminal")
@@ -570,29 +588,75 @@ struct HostsSectionView: View {
     }
 
     private var hostsSection: some View {
-        let hosts = sortHosts(currentHosts())
+        let buckets = hostBuckets
         return Group {
-            if !hosts.isEmpty {
+            if !buckets.isEmpty {
                 sectionHeader("Hosts")
-                if viewMode == .grid {
-                    LazyVGrid(
-                        columns: gridColumns,
-                        alignment: .leading, spacing: 12
-                    ) {
-                        ForEach(hosts) { host in
-                            hostCardView(host)
-                        }
-                    }
-                } else {
-                    VStack(spacing: 6) {
-                        ForEach(hosts) { host in
-                            hostListRowView(host)
-                        }
-                    }
+                ForEach(buckets) { bucket in
+                    hostBucketView(bucket)
                 }
             } else if !groupsStore.children(of: focusedGroupID).isEmpty {
                 // Don't show empty "Hosts" header when there are only groups.
                 EmptyView()
+            }
+        }
+    }
+
+    /// Build one bucket per direct Group so every Host appears exactly once.
+    /// At the root this includes nested groups; their full path keeps similarly
+    /// named groups distinguishable. When drilled into a group, currentHosts()
+    /// retains its existing recursive scope and the same grouping remains clear.
+    private var hostBuckets: [HostBucket] {
+        let visibleHosts = currentHosts()
+        let knownGroupIDs = Set(groupsStore.groups.map(\.id))
+        let grouped = Dictionary(grouping: visibleHosts) { host -> UUID? in
+            guard let id = host.groupID, knownGroupIDs.contains(id) else { return nil }
+            return id
+        }
+
+        var result: [HostBucket] = []
+        if let ungrouped = grouped[nil], !ungrouped.isEmpty {
+            result.append(HostBucket(
+                id: "ungrouped",
+                title: "Ungrouped",
+                hosts: sortHosts(ungrouped)))
+        }
+
+        let usedGroupIDs = Set(grouped.keys.compactMap { $0 })
+        let orderedGroups = sortGroups(groupsStore.groups.filter { usedGroupIDs.contains($0.id) })
+        for group in orderedGroups {
+            guard let hosts = grouped[group.id], !hosts.isEmpty else { continue }
+            result.append(HostBucket(
+                id: group.id.uuidString,
+                title: groupsStore.path(for: group.id),
+                hosts: sortHosts(hosts)))
+        }
+        return result
+    }
+
+    @ViewBuilder
+    private func hostBucketView(_ bucket: HostBucket) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(bucket.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondaryText)
+                .padding(.top, 4)
+
+            if viewMode == .grid {
+                LazyVGrid(
+                    columns: gridColumns,
+                    alignment: .leading, spacing: 12
+                ) {
+                    ForEach(bucket.hosts) { host in
+                        hostCardView(host)
+                    }
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(bucket.hosts) { host in
+                        hostListRowView(host)
+                    }
+                }
             }
         }
     }
@@ -885,6 +949,15 @@ struct HostsSectionView: View {
         hostDraft = nil
         groupDraft = nil
         newHostSeed = ""
+    }
+
+    /// Explicit Save finishes the edit without opening a terminal. Individual
+    /// fields may already have autosaved; this final flush catches the field
+    /// that still has focus, then closes the editor.
+    private func saveHostDraft() {
+        guard hostDraft?.canSave == true else { return }
+        autosaveDraftNow()
+        cancel()
     }
 
     /// Throw away a new-host draft entirely: remove any autosaved copy from

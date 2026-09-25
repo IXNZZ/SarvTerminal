@@ -67,6 +67,7 @@ struct ImportHostsView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 120), spacing: 14)], spacing: 16) {
                 formatCard("~/.ssh/config", "terminal", enabled: true) { startSSH() }
                 formatCard("iTerm2", "macwindow.on.rectangle", enabled: true) { startiTerm2() }
+                formatCard("Tabby YAML", "doc.text", enabled: true) { chooseTabby() }
                 formatCard("CSV", "tablecells", enabled: true) { title = "Import from CSV"; note = nil; screen = .csvIntro }
                 formatCard("PuTTY", "pc", enabled: true) { startPuTTY() }
                 formatCard("MobaXterm", "macwindow", enabled: true) { startMobaXterm() }
@@ -155,10 +156,10 @@ struct ImportHostsView: View {
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 8)
 
-            // Group header with select-all.
+            // Profile header with select-all.
             HStack(spacing: 10) {
                 Image(systemName: "server.rack").foregroundStyle(.secondaryText)
-                Text("Hosts").font(.headline)
+                Text("Profiles").font(.headline)
                 Spacer()
                 Text("\(selected.count) of \(candidates.count)").font(.caption).foregroundStyle(.secondaryText)
                 Button { toggleAll() } label: {
@@ -172,20 +173,34 @@ struct ImportHostsView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filtered) { host in
-                        Button { toggle(host.id) } label: {
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(host.label).foregroundStyle(.primary)
-                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondaryText)
-                                }
-                                Spacer(minLength: 8)
+                        HStack(spacing: 10) {
+                            Button { toggle(host.id) } label: {
                                 Image(systemName: selected.contains(host.id) ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(selected.contains(host.id) ? .blue : .secondary)
+                                    .frame(width: 18)
                             }
-                            .padding(.horizontal, 24).padding(.vertical, 9)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                TextField("Profile name", text: binding(for: host.id))
+                                    .textFieldStyle(.plain)
+                                    .font(.body)
+                                HStack(spacing: 6) {
+                                    Text(host.kind.displayName)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(host.canImport ? .secondaryText : .orange)
+                                    Text(host.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                if let note = host.note.isEmpty ? nil : host.note {
+                                    Text(note).font(.caption2).foregroundStyle(.orange)
+                                }
+                            }
+                            Spacer(minLength: 8)
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24).padding(.vertical, 8)
                         Divider().padding(.leading, 24)
                     }
                 }
@@ -193,9 +208,28 @@ struct ImportHostsView: View {
         }
     }
 
-    private var allSelected: Bool { !candidates.isEmpty && selected.count == candidates.count }
+    private var importableIDs: Set<UUID> {
+        Set(candidates.filter(\.canImport).map(\.id))
+    }
+
+    private var allSelected: Bool {
+        !importableIDs.isEmpty && importableIDs.isSubset(of: selected)
+    }
+
     private func toggle(_ id: UUID) { if selected.contains(id) { selected.remove(id) } else { selected.insert(id) } }
-    private func toggleAll() { selected = allSelected ? [] : Set(candidates.map(\.id)) }
+    private func toggleAll() {
+        if allSelected { selected.subtract(importableIDs) }
+        else { selected.formUnion(importableIDs) }
+    }
+
+    private func binding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: { candidates.first(where: { $0.id == id })?.label ?? "" },
+            set: { value in
+                guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
+                candidates[index].label = value
+            })
+    }
 
     // MARK: - 4. Done
 
@@ -270,6 +304,33 @@ struct ImportHostsView: View {
         showPreview(hosts, title: "Review \(hosts.count) iTerm2 profile\(hosts.count == 1 ? "" : "s")")
     }
 
+    private func chooseTabby() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        // Tabby exports YAML files, but macOS does not always classify .yaml
+        // and .yml as plain text. Include both extensions explicitly while
+        // keeping plain text available for files without a standard suffix.
+        panel.allowedContentTypes = [
+            .plainText,
+            UTType(filenameExtension: "yaml"),
+            UTType(filenameExtension: "yml")
+        ].compactMap { $0 }
+        panel.prompt = "Import"
+        panel.message = "Choose your Tabby version 8 YAML configuration."
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+                note = "Couldn't read that Tabby YAML file."
+                return
+            }
+            let (profiles, error) = HostImporter.parseTabby(content)
+            if let error { note = error; return }
+            showPreview(profiles, title: "Review \(profiles.count) Tabby profile\(profiles.count == 1 ? "" : "s")")
+        }
+    }
+
     private func startPuTTY() {
         pickFile(allowDirectory: false) { content in
             let (hosts, error) = HostImporter.parsePuTTY(content)
@@ -341,7 +402,7 @@ struct ImportHostsView: View {
 
     private func showPreview(_ hosts: [ParsedHost], title: String) {
         candidates = hosts
-        selected = Set(hosts.map(\.id))   // all selected by default
+        selected = Set(hosts.filter(\.defaultSelected).map(\.id))
         filter = ""; note = nil
         self.title = title
         screen = .preview
@@ -370,6 +431,191 @@ struct ImportHostsView: View {
                 savedTemplateURL = nil
                 note = "Couldn't save the template: \(error.localizedDescription)"
             }
+        }
+    }
+}
+
+/// Moves the complete Hosts vault between Sarv builds or machines. The archive
+/// is encrypted with a user-chosen password, so saved SSH passwords can travel
+/// with the Hosts without being written to a plain-text export.
+struct HostTransferView: View {
+    enum Operation: String, CaseIterable, Identifiable {
+        case export, `import`
+        var id: Self { self }
+        var label: String { self == .export ? "Export" : "Import" }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var operation: Operation
+    @State private var transferPassword = ""
+    @State private var confirmPassword = ""
+    @State private var archiveURL: URL?
+    @State private var replaceExisting = false
+    @State private var message: String?
+    @State private var result: HostTransferResult?
+    @State private var finished = false
+
+    init(operation: Operation = .export) {
+        _operation = State(initialValue: operation)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 8) {
+                Image(systemName: "arrow.left.arrow.right.square")
+                    .font(.system(size: 34)).foregroundStyle(.tint)
+                Text("Transfer Hosts")
+                    .font(.title2.weight(.bold))
+                Text("Move Hosts, Groups, and saved passwords between Sarv builds.")
+                    .font(.callout).foregroundStyle(.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 22).padding(.bottom, 16)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                Picker("Operation", selection: $operation) {
+                    ForEach(Operation.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if operation == .export {
+                    exportForm
+                } else {
+                    importForm
+                }
+
+                if let message {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let result {
+                    Label(result.summary, systemImage: "checkmark.circle.fill")
+                        .font(.callout).foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+            .padding(24)
+
+            Divider()
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                if finished {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 14)
+            .background(.bar)
+        }
+        .frame(width: 560, height: 480)
+        .background(.background)
+        .onChange(of: operation) { _ in
+            message = nil
+            result = nil
+            finished = false
+        }
+    }
+
+    private var exportForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("This creates an encrypted `.sarvhosts` archive.")
+                .font(.callout)
+            Text("\(HostTransfer.currentHostCount) Hosts · \(HostTransfer.currentGroupCount) Groups")
+                .font(.caption).foregroundStyle(.secondaryText)
+            SecureField("Transfer password", text: $transferPassword)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Confirm transfer password", text: $confirmPassword)
+                .textFieldStyle(.roundedBorder)
+            if !confirmPassword.isEmpty && transferPassword != confirmPassword {
+                Text("Passwords do not match.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            Button("Choose location and export…") { chooseExportLocation() }
+                .controlSize(.large)
+                .disabled(transferPassword.isEmpty || transferPassword != confirmPassword)
+        }
+    }
+
+    private var importForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(archiveURL?.lastPathComponent ?? "Choose `.sarvhosts` file…") {
+                chooseImportFile()
+            }
+            .controlSize(.large)
+            SecureField("Transfer password", text: $transferPassword)
+                .textFieldStyle(.roundedBorder)
+            Picker("When Hosts already exist", selection: $replaceExisting) {
+                Text("Merge with current Hosts").tag(false)
+                Text("Replace current Hosts").tag(true)
+            }
+            .pickerStyle(.radioGroup)
+            if replaceExisting {
+                Text("Replace removes the current Hosts and Groups before importing.")
+                    .font(.caption).foregroundStyle(.orange)
+            } else {
+                Text("Merge keeps current Hosts and skips duplicate endpoints.")
+                    .font(.caption).foregroundStyle(.secondaryText)
+            }
+            Button("Import archive") { importArchive() }
+                .controlSize(.large)
+                .disabled(archiveURL == nil || transferPassword.isEmpty)
+        }
+    }
+
+    private func chooseExportLocation() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "sarvhosts") ?? .data]
+        panel.nameFieldStringValue = "sarv-hosts.sarvhosts"
+        panel.prompt = "Export"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try HostTransfer.export(to: url, password: transferPassword)
+                message = nil
+                result = HostTransferResult(imported: HostTransfer.currentHostCount, exported: true)
+                finished = true
+            } catch {
+                result = nil
+                message = error.localizedDescription
+            }
+        }
+    }
+
+    private func chooseImportFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "sarvhosts") ?? .data]
+        panel.prompt = "Open"
+        panel.begin { response in
+            guard response == .OK else { return }
+            archiveURL = panel.url
+            message = nil
+            result = nil
+            finished = false
+        }
+    }
+
+    private func importArchive() {
+        guard let archiveURL else { return }
+        do {
+            result = try HostTransfer.importArchive(
+                from: archiveURL, password: transferPassword, replace: replaceExisting)
+            message = nil
+            finished = true
+        } catch {
+            result = nil
+            message = error.localizedDescription
         }
     }
 }

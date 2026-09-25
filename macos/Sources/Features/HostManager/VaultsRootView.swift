@@ -316,6 +316,10 @@ private struct VaultsHostEditorSidebar: View {
                     }
                     SavedHostsStore.shared.upsert(draft)
                     return true
+                },
+                onSave: {
+                    SavedHostsStore.shared.upsert(draft)
+                    onClose()
                 }
             )
         }
